@@ -25,6 +25,7 @@ import '../theme/app_tokens.dart';
 import '../theme/app_theme.dart';
 import 'bangumi_bind_sheet.dart';
 import 'bangumi_subject_sheet.dart';
+import 'desktop_horizontal_scroll.dart';
 
 enum _FullState { loading, resolved, candidates, noMatch, error }
 
@@ -378,14 +379,19 @@ class _BangumiFullTabState extends State<BangumiFullTab>
               title: l10n.bangumiCharacters,
               expanded: _charsExpanded,
               onChanged: (v) => setState(() => _charsExpanded = v),
-              child: SizedBox(
-                height: 142,
-                child: ListView.separated(
-                  scrollDirection: Axis.horizontal,
-                  itemCount: _characters.length,
-                  separatorBuilder: (_, __) =>
-                      const SizedBox(width: AppTokens.spaceSm),
-                  itemBuilder: (_, i) => _CharacterTile(char: _characters[i]),
+              // DesktopHorizontalScroll：桌面端鼠标按住拖动 + 竖向滚轮转横向
+              // （与首页海报行同款交互，见 desktop_horizontal_scroll.dart）。
+              child: DesktopHorizontalScroll(
+                builder: (context, controller) => SizedBox(
+                  height: 142,
+                  child: ListView.separated(
+                    controller: controller,
+                    scrollDirection: Axis.horizontal,
+                    itemCount: _characters.length,
+                    separatorBuilder: (_, __) =>
+                        const SizedBox(width: AppTokens.spaceSm),
+                    itemBuilder: (_, i) => _CharacterTile(char: _characters[i]),
+                  ),
                 ),
               ),
             ),
@@ -402,14 +408,17 @@ class _BangumiFullTabState extends State<BangumiFullTab>
               title: l10n.bangumiStaff,
               expanded: _staffExpanded,
               onChanged: (v) => setState(() => _staffExpanded = v),
-              child: SizedBox(
-                height: 142,
-                child: ListView.separated(
-                  scrollDirection: Axis.horizontal,
-                  itemCount: _staff.length,
-                  separatorBuilder: (_, __) =>
-                      const SizedBox(width: AppTokens.spaceSm),
-                  itemBuilder: (_, i) => _StaffTile(staff: _staff[i]),
+              child: DesktopHorizontalScroll(
+                builder: (context, controller) => SizedBox(
+                  height: 142,
+                  child: ListView.separated(
+                    controller: controller,
+                    scrollDirection: Axis.horizontal,
+                    itemCount: _staff.length,
+                    separatorBuilder: (_, __) =>
+                        const SizedBox(width: AppTokens.spaceSm),
+                    itemBuilder: (_, i) => _StaffTile(staff: _staff[i]),
+                  ),
                 ),
               ),
             ),
