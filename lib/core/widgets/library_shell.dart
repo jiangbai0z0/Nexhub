@@ -347,52 +347,80 @@ class _LibraryShellState extends State<LibraryShell> {
   }
 
   Widget _buildTopTabs(AppLocalizations l10n, ColorScheme scheme) {
+    // 选中短横线不再逐格淡入淡出：像源管理页签一样平滑滑动到新页签
+    // （与 AppSegmentedTabs 胶囊同一套 AnimatedPositioned 灵动语言）。
+    final int selIdx = _currentTopTab.index;
     return Container(
       padding: const EdgeInsets.symmetric(
         horizontal: AppTokens.spaceMd,
         vertical: AppTokens.spaceXs,
       ),
-      // 每个页签用 Expanded 均分宽度：窄屏下 4 个页签（含长文案如英文
-      // "Subscribe"/"Sources"）也不会横向溢出（修复 130：页面不适配部分手机）。
-      child: Row(
-        children: <Widget>[
-          Expanded(
-            child: _TopTabItem(
-              icon: Icons.menu_book_rounded,
-              label: widget.libraryTabLabel ?? l10n.tabLibrary,
-              selected: _currentTopTab == LibraryTopTab.library,
-              onTap: () => _selectTop(LibraryTopTab.library),
-              scheme: scheme,
-            ),
-          ),
-          Expanded(
-            child: _TopTabItem(
-              icon: Icons.language_rounded,
-              label: l10n.tabOnline,
-              selected: _currentTopTab == LibraryTopTab.online,
-              onTap: () => _selectTop(LibraryTopTab.online),
-              scheme: scheme,
-            ),
-          ),
-          Expanded(
-            child: _TopTabItem(
-              icon: Icons.rss_feed_rounded,
-              label: l10n.tabSubscribe,
-              selected: _currentTopTab == LibraryTopTab.subscribe,
-              onTap: () => _selectTop(LibraryTopTab.subscribe),
-              scheme: scheme,
-            ),
-          ),
-          Expanded(
-            child: _TopTabItem(
-              icon: Icons.extension_rounded,
-              label: l10n.tabSources,
-              selected: _currentTopTab == LibraryTopTab.sources,
-              onTap: () => _selectTop(LibraryTopTab.sources),
-              scheme: scheme,
-            ),
-          ),
-        ],
+      child: LayoutBuilder(
+        builder: (BuildContext ctx, BoxConstraints c) {
+          final double segW = c.maxWidth / 4;
+          return Stack(
+            children: <Widget>[
+              // 每个页签用 Expanded 均分宽度：窄屏下 4 个页签（含长文案如英文
+              // "Subscribe"/"Sources"）也不会横向溢出（修复 130：页面不适配部分手机）。
+              Row(
+                children: <Widget>[
+                  Expanded(
+                    child: _TopTabItem(
+                      icon: Icons.menu_book_rounded,
+                      label: widget.libraryTabLabel ?? l10n.tabLibrary,
+                      selected: _currentTopTab == LibraryTopTab.library,
+                      onTap: () => _selectTop(LibraryTopTab.library),
+                      scheme: scheme,
+                    ),
+                  ),
+                  Expanded(
+                    child: _TopTabItem(
+                      icon: Icons.language_rounded,
+                      label: l10n.tabOnline,
+                      selected: _currentTopTab == LibraryTopTab.online,
+                      onTap: () => _selectTop(LibraryTopTab.online),
+                      scheme: scheme,
+                    ),
+                  ),
+                  Expanded(
+                    child: _TopTabItem(
+                      icon: Icons.rss_feed_rounded,
+                      label: l10n.tabSubscribe,
+                      selected: _currentTopTab == LibraryTopTab.subscribe,
+                      onTap: () => _selectTop(LibraryTopTab.subscribe),
+                      scheme: scheme,
+                    ),
+                  ),
+                  Expanded(
+                    child: _TopTabItem(
+                      icon: Icons.extension_rounded,
+                      label: l10n.tabSources,
+                      selected: _currentTopTab == LibraryTopTab.sources,
+                      onTap: () => _selectTop(LibraryTopTab.sources),
+                      scheme: scheme,
+                    ),
+                  ),
+                ],
+              ),
+              // 滑动短横线：贴在每格底部、宽 32 居中（与原静态短线同位同宽）。
+              // easeOutCubic 平滑减速无回弹（用户要求不要回弹）。
+              AnimatedPositioned(
+                duration: AppTokens.durBase,
+                curve: Curves.easeOutCubic,
+                left: selIdx * segW + segW / 2 - 16,
+                bottom: 0,
+                width: 32,
+                height: 2,
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: scheme.primary,
+                    borderRadius: BorderRadius.circular(1),
+                  ),
+                ),
+              ),
+            ],
+          );
+        },
       ),
     );
   }
@@ -479,15 +507,9 @@ class _TopTabItem extends StatelessWidget {
                   ),
             ),
             const SizedBox(height: AppTokens.spaceXs),
-            // 选中态下划线指示器（对齐 AppTabBar UnderlineTabIndicator 写法）
-            Container(
-              height: 2,
-              width: 32,
-              decoration: BoxDecoration(
-                color: selected ? scheme.primary : Colors.transparent,
-                borderRadius: BorderRadius.circular(1),
-              ),
-            ),
+            // 短横线槽位：指示条由外层 Stack 的滑动短横线绘制，这里只
+            // 保留原高度占位，避免选中态行高跳动。
+            const SizedBox(height: AppTokens.spaceXs + 2),
           ],
         ),
       ),

@@ -568,28 +568,70 @@ class _SourceManagerScreenState extends State<SourceManagerScreen>
   /// 构建主体内容（Tab 栏 + 内容区），供嵌入模式和完整模式共用。
   Widget _buildBody(AppLocalizations l10n, ColorScheme scheme,
       List<PluginConfig> filteredSources) {
+    // 顶部 Tab 切换：仅总管理（filterType == null，设置页入口）用下划线
+    // 文字页签；分区页面（各模块主页「源」页签嵌入）保留原胶囊分段样式
+    // （2026-10-04 定稿：格式互换只做总管理，分区还原）。
+    final bool isMaster = widget.filterType == null;
     return Column(
       children: <Widget>[
-        // 顶部 Tab 切换：下划线文字页签（与分类行的胶囊分段互换后的格式），
-        // 等宽平分整屏；M3 TabBar 自带底部分隔线，不再另铺 Divider。
-        Material(
-          color: scheme.surface,
-          child: TabBar(
-            controller: _modeTabCtrl,
-            onTap: (int i) {
-              AppHaptics.selectionClick();
-              if (_tab.index != i) {
-                setState(() => _tab = _SourceTab.values[i]);
-              }
-            },
-            tabs: <Widget>[
-              Tab(text: l10n.sourceListTab),
-              Tab(text: l10n.libraryBookmarks),
-              Tab(text: l10n.networkImportTab),
-              Tab(text: l10n.localImportTab),
-            ],
+        if (isMaster)
+          Material(
+            color: scheme.surface,
+            child: TabBar(
+              controller: _modeTabCtrl,
+              onTap: (int i) {
+                AppHaptics.selectionClick();
+                if (_tab.index != i) {
+                  setState(() => _tab = _SourceTab.values[i]);
+                }
+              },
+              tabs: <Widget>[
+                Tab(text: l10n.sourceListTab),
+                Tab(text: l10n.libraryBookmarks),
+                Tab(text: l10n.networkImportTab),
+                Tab(text: l10n.localImportTab),
+              ],
+            ),
+          )
+        else ...<Widget>[
+          Padding(
+            padding: const EdgeInsets.symmetric(
+              horizontal: AppTokens.spaceLg,
+              vertical: AppTokens.spaceSm,
+            ),
+            child: AppSegmentedTabs<_SourceTab>(
+              selected: <_SourceTab>{_tab},
+              onSelectionChanged: (sel) {
+                if (sel.isNotEmpty) {
+                  setState(() => _tab = sel.first);
+                }
+              },
+              segments: <ButtonSegment<_SourceTab>>[
+                ButtonSegment<_SourceTab>(
+                  value: _SourceTab.list,
+                  icon: const Icon(Icons.list_rounded),
+                  label: Text(l10n.sourceListTab),
+                ),
+                ButtonSegment<_SourceTab>(
+                  value: _SourceTab.library,
+                  icon: const Icon(Icons.cloud_rounded),
+                  label: Text(l10n.libraryBookmarks),
+                ),
+                ButtonSegment<_SourceTab>(
+                  value: _SourceTab.network,
+                  icon: const Icon(Icons.cloud_download_rounded),
+                  label: Text(l10n.networkImportTab),
+                ),
+                ButtonSegment<_SourceTab>(
+                  value: _SourceTab.local,
+                  icon: const Icon(Icons.file_present_rounded),
+                  label: Text(l10n.localImportTab),
+                ),
+              ],
+            ),
           ),
-        ),
+          const Divider(height: 1),
+        ],
 
         // Tab 内容
         Expanded(

@@ -41,8 +41,9 @@ void main() {
 
   Future<void> pumpManager(
     WidgetTester tester,
-    List<PluginConfig> sources,
-  ) async {
+    List<PluginConfig> sources, {
+    SourceType? filterType,
+  }) async {
     await tester.pumpWidget(
       MultiProvider(
         providers: [
@@ -61,19 +62,21 @@ void main() {
             ),
           ),
         ],
-        child: const MaterialApp(
-          locale: Locale('zh'),
-          supportedLocales: <Locale>[Locale('zh'), Locale('en')],
+        child: MaterialApp(
+          locale: const Locale('zh'),
+          supportedLocales: const <Locale>[Locale('zh'), Locale('en')],
           // 与 lib/app.dart 同款：GlobalMaterialLocalizations 须经 material_ui
           // 分叉导出（fork 的 MaterialLocalizations 类型），TabBar 的分叉检查
           // 才认账；AppLocalizations.delegate 提供应用自身文案。
-          localizationsDelegates: <LocalizationsDelegate<dynamic>>[
+          localizationsDelegates: const <LocalizationsDelegate<dynamic>>[
             AppLocalizations.delegate,
             ...GlobalMaterialLocalizations.delegates,
           ],
           // 嵌入模式依赖外层外壳的 Scaffold 提供 Material 祖先（网络导入
           // 页的输入框需要），与真实使用场景（LibraryShell）一致。
-          home: Scaffold(body: SourceManagerScreen(embedded: true)),
+          home: Scaffold(
+            body: SourceManagerScreen(embedded: true, filterType: filterType),
+          ),
         ),
       ),
     );
@@ -111,7 +114,8 @@ void main() {
     await tester.tap(find.text('网络导入'));
     await tester.pumpAndSettle();
     expect(find.text('小说源a'), findsNothing);
-    expect(find.byType(AppSegmentedTabs), findsNothing);
+    expect(find.byWidgetPredicate((Widget w) => w is AppSegmentedTabs),
+        findsNothing);
   });
 
   testWidgets('第二行胶囊分段：点击切分类', (WidgetTester tester) async {
@@ -122,10 +126,24 @@ void main() {
     expect(find.text('小说源a'), findsNothing);
   });
 
+  testWidgets('分区源管理（filterType 非空）保留原胶囊分段样式', (WidgetTester tester) async {
+    await pumpManager(
+      tester,
+      <PluginConfig>[novelSource('a')],
+      filterType: SourceType.novelSource,
+    );
+    // 分区页面不出现下划线页签，顶栏仍是原胶囊分段（图标+文字）。
+    expect(find.byType(TabBar), findsNothing);
+    expect(find.byWidgetPredicate((Widget w) => w is AppSegmentedTabs),
+        findsOneWidget);
+    expect(find.text('小说源a'), findsOneWidget);
+  });
+
   testWidgets('空态「添加源」程序化跳转网络导入，指示条同步', (WidgetTester tester) async {
     await pumpManager(tester, <PluginConfig>[]);
     await tester.tap(find.text('添加源'));
     await tester.pumpAndSettle();
-    expect(find.byType(AppSegmentedTabs), findsNothing);
+    expect(find.byWidgetPredicate((Widget w) => w is AppSegmentedTabs),
+        findsNothing);
   });
 }
