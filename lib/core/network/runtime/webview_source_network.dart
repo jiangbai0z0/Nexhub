@@ -510,9 +510,16 @@ class WebviewSourceNetwork {
     }
   }
 
+  /// 把 [a] 的字节泵到 [b]，反向同理。
+  ///
+  /// 转发必须容忍任一端的提前关闭：WebView2 在拿到完整响应后会立刻关闭
+  /// 隧道，此时我们这侧仍在把残余字节写进已死的 socket，写操作抛
+  /// `SocketException: Write failed ... errno = 10053`（WSAECONNABORTED）。
+  /// 这类异常是**正常的拆除竞态**，不是故障——不吞掉就会冒成
+  /// `未捕获异常 / Uncaught zone error`，而 WebView 侧其实已经拿到内容。
   void _pipe(Socket a, Socket b) {
     a.listen(
-      (d) => b.add(d),
+      (d) => _safeAdd(b, d),
       onDone: () {
         try {
           b.close();
@@ -530,7 +537,7 @@ class WebviewSourceNetwork {
       cancelOnError: true,
     );
     b.listen(
-      (d) => a.add(d),
+      (d) => _safeAdd(a, d),
       onDone: () {
         try {
           a.close();
@@ -547,6 +554,16 @@ class WebviewSourceNetwork {
       },
       cancelOnError: true,
     );
+  }
+
+  /// 向已关闭/已中断的 socket 写入会抛 [SocketException]；
+  /// 对端先关是隧道拆除的正常路径，静默丢弃即可。
+  static void _safeAdd(Socket target, List<int> data) {
+    try {
+      target.add(data);
+    } on Object {
+      // 对端已关闭：本次转发作废，等待 onDone/onError 收尾。
+    }
   }
 
   // ---- 平台通道（Android ProxyController）----

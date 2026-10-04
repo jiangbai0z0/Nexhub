@@ -227,7 +227,11 @@ class _HttpBrowserScreenState extends State<HttpBrowserScreen> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(l10n.browserUseAsVerificationDone)),
     );
-    Navigator.of(context).pop(true);
+    // 同 onLoadStop：菜单项 onSelected 与本页 pop 之间存在路由被压栈的窗口，
+    // 非栈顶时擅自 pop 会把 bool 结果弹给别的路由（类型断言崩溃）。
+    if (ModalRoute.of(context)?.isCurrent == true) {
+      Navigator.of(context).pop(true);
+    }
   }
 
   /// 打开「视频嗅探模式」：在当前页基础上拦截动态加载的串流。
@@ -564,7 +568,16 @@ class _HttpBrowserScreenState extends State<HttpBrowserScreen> {
                       ),
                     );
                     await Future.delayed(const Duration(milliseconds: 700));
-                    if (mounted) Navigator.of(context).pop(true);
+                    // 仅当本页仍是栈顶时才带结果返回。这 700ms 窗口里用户可能已
+                    // 点开 AppBar 的三点菜单——PopupMenuButton 内部会 push 一条
+                    // _PopupMenuRoute<String?>，此时 pop(true) 是把 bool 弹给它：
+                    // 「A request was made to pop a route with a result of type
+                    // bool, but the route expected a value of type String?」直接
+                    // 抛未捕获异常。非栈顶时静默跳过（_autoVerified 已置位，不会
+                    // 重复触发；用户仍可经菜单手动「用此页完成验证」）。
+                    if (mounted && ModalRoute.of(context)?.isCurrent == true) {
+                      Navigator.of(context).pop(true);
+                    }
                   }
                 }
               }
