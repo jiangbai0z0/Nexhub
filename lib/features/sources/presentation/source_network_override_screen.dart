@@ -11,8 +11,14 @@
 ///
 /// 打开页面时工作副本逐方面取「用户覆盖 ?? 源文件 network 块」，与
 /// [NetworkConfigService.effectiveFor] 的合并语义一致：导入自带 network
-/// 块的源后直接沿用源自带配置，用户无需重新配置；保存后固化为用户覆盖。
+/// 块的源后直接沿用源自带配置，用户无需重新配置。
+///
+/// 保存只落盘**用户真正改过**的方面（见 [_collectOverride]）：与源文件相同的
+/// 方面保持继承，源文件更新后能跟着一起更新——否则用户打开本页点一次保存，
+/// 就把源文件当时那版配置钉成用户覆盖，源文件后续更新永久失效。
 library;
+
+import 'dart:convert';
 
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
@@ -122,7 +128,10 @@ class _SourceNetworkOverrideScreenState
         _ => key,
       };
 
-  /// 从控件与工作副本组装最终覆盖（仅包含已启用方面）。
+  /// 从控件与工作副本组装工作配置（页面所见即所得，**不做**与源文件的比对）。
+  ///
+  /// 供「测试」类操作使用：用户点了测试，就是要在当前所见配置下试，哪怕
+  /// 这些值原本来自源文件。落盘请用 [_collectOverride]。
   SourceNetworkConfig _collect() {
     return SourceNetworkConfig(
       proxy: _proxy?.copyWith(
@@ -139,18 +148,83 @@ class _SourceNetworkOverrideScreenState
         resolveSuffix: _dns!.resolveSuffix,
         resolveSuffixDomains: _dns!.resolveSuffixDomains,
       ),
-      sni: _sni?.copyWith(
-        defaultSni: _sniDefaultCtrl.text.trim().isEmpty
-            ? null
-            : _sniDefaultCtrl.text.trim(),
-      ),
+      // defaultSni 不能用 copyWith：它用 `x ?? this.x`，而「清空输入框」的
+      // 语义就是 null，传 null 会被当成「保持原值」⇒ 用户清空后仍留着旧值，
+      // 删除操作静默失效（运行时 normalize(null) = 不覆盖，正是用户要的结果）。
+      sni: _sni == null
+          ? null
+          : SniConfig(
+              defaultSni: _sniDefaultCtrl.text.trim().isEmpty
+                  ? null
+                  : _sniDefaultCtrl.text.trim(),
+              domainSni: _sni!.domainSni,
+              enabled: _sni!.enabled,
+            ),
       ech: _ech?.copyWith(echConfigList: _echCtrl.text.trim()),
       hosts: _hosts,
     );
   }
 
+  /// 组装**要落盘的覆盖**：只保留与源文件真正不同的方面。
+  ///
+  /// **为什么必须过滤（真机故障根因）**：本页工作副本的来源是
+  /// `用户覆盖 ?? 源文件`，所以用户「看到但没改」的值很可能正是源文件里的值。
+  /// 若原样写回覆盖，等于把源文件当前这一版**钉**进用户覆盖——此后源文件更新
+  /// hosts 等配置会被这份快照永久挡住（运行时合并是 `user.x ?? file.x`，用户
+  /// 覆盖恒优先）。真机就出过这类故障：一份陈旧覆盖里的 8 条坏 IP 把新源文件
+  /// 里实测可用的 IP 全屏蔽，表现为「WebView 能打开但抓不到内容」。
+  ///
+  /// 因此逐方面与源文件比对，未改动的方面留 null = 继续继承源文件，也就能跟着
+  /// 源文件一起更新。
+  SourceNetworkConfig _collectOverride() {
+    final working = _collect();
+    final file = widget.source.network;
+    if (file == null) return working;
+    return SourceNetworkConfig(
+      proxy: _sameFacet(working.proxy, file.proxy) ? null : working.proxy,
+      dns: _sameFacet(working.dns, file.dns) ? null : working.dns,
+      hosts: _sameFacet(working.hosts, file.hosts) ? null : working.hosts,
+      sni: _sameFacet(working.sni, file.sni) ? null : working.sni,
+      ech: _sameFacet(working.ech, file.ech) ? null : working.ech,
+    );
+  }
+
+  /// 两个「方面」是否语义相同（用于判断用户是否真的改动过）。
+  ///
+  /// 比的是规范化 JSON：这些模型（[HostsEntry]/[ProxyConfig]/…）都没实现
+  /// `==`，直接比较比的是实例身份，未改动的方面也会被判成「不同」。
+  bool _sameFacet(Object? a, Object? b) {
+    if (a == null || b == null) return a == b;
+    return jsonEncode(_normalize(_facetJson(a))) ==
+        jsonEncode(_normalize(_facetJson(b)));
+  }
+
+  /// 把某个方面摊平成可 JSON 化的结构（hosts 是 [HostsEntry] 列表）。
+  Object? _facetJson(Object? facet) {
+    if (facet is List) return facet.map(_facetJson).toList();
+    if (facet is HostsEntry) return facet.toJson();
+    if (facet is ProxyConfig) return facet.toJson();
+    if (facet is DnsConfig) return facet.toJson();
+    if (facet is SniConfig) return facet.toJson();
+    if (facet is EchConfig) return facet.toJson();
+    return facet;
+  }
+
+  /// 递归排序 map 键：字面量顺序不代表语义差异（如 `domainSni`）。
+  Object? _normalize(Object? value) {
+    if (value is Map) {
+      final entries = value.entries.toList()
+        ..sort((a, b) => a.key.toString().compareTo(b.key.toString()));
+      return <String, Object?>{
+        for (final e in entries) e.key.toString(): _normalize(e.value),
+      };
+    }
+    if (value is List) return value.map(_normalize).toList();
+    return value;
+  }
+
   Future<void> _save(AppLocalizations l10n) async {
-    final cfg = _collect();
+    final cfg = _collectOverride();
     final errs = cfg.validate();
     if (errs.isNotEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(

@@ -3,7 +3,9 @@
 /// - 源 JSON 自带 `network` 块（代理 manual + hosts）：打开覆盖页直接沿用
 /// 源自带配置（开关开启、字段回填、显示「已自动沿用」提示），无需重新配置。
 /// - 源无 `network` 块：各字段为空、显示「继承全局」，不显示沿用提示。
-/// - 保存：沿用值固化为用户覆盖（写入 [SourceNetworkOverrideStore]）。
+/// - 保存：**只把与源文件真正不同的方面**写入 [SourceNetworkOverrideStore]。
+///   没改过的方面留空 = 继续继承源文件，源文件更新后能跟着一起更新。
+///   这是真机故障（陈旧用户覆盖里的坏 IP 把新源文件可用 IP 全屏蔽）的回归防线。
 library;
 
 import 'package:material_ui/material_ui.dart';
@@ -92,7 +94,8 @@ void main() {
     expect(find.text('127.0.0.1'), findsNothing);
   });
 
-  testWidgets('保存把沿用值固化为用户覆盖', (WidgetTester tester) async {
+  testWidgets('未改动任何方面时保存：不落盘覆盖（全继承源文件）',
+      (WidgetTester tester) async {
     final source = _sourceWithNetwork(<String, dynamic>{
       'proxy': <String, dynamic>{
         'mode': 'manual',
@@ -101,6 +104,9 @@ void main() {
         'port': 7890,
         'username': '',
       },
+      'hosts': <Map<String, dynamic>>[
+        <String, dynamic>{'ip': '1.2.3.4', 'host': 'cdn.example.com'},
+      ],
     });
     expect(SourceNetworkOverrideStore.instance.get('net_seed_test'), isNull);
 
@@ -115,9 +121,125 @@ void main() {
     await tester.tap(find.text('保存'));
     await tester.pumpAndSettle();
 
+    // 点保存但没改过任何东西 ⇒ 不产生用户覆盖：源文件更新后仍能生效。
+    expect(
+      SourceNetworkOverrideStore.instance.get('net_seed_test'),
+      isNull,
+      reason: '未改动的方面不应被固化成用户覆盖，否则源文件更新会被永久挡住',
+    );
+  });
+
+  testWidgets('保存只落盘真正改动的方面，且源文件更新后未改动方面跟随更新',
+      (WidgetTester tester) async {
+    final source = _sourceWithNetwork(<String, dynamic>{
+      'proxy': <String, dynamic>{
+        'mode': 'manual',
+        'protocol': 'http',
+        'host': '127.0.0.1',
+        'port': 7890,
+        'username': '',
+      },
+      'hosts': <Map<String, dynamic>>[
+        <String, dynamic>{'ip': '1.2.3.4', 'host': 'cdn.example.com'},
+      ],
+    });
+
+    await tester.pumpWidget(_wrap(source));
+    await tester.pumpAndSettle();
+
+    // 只改代理主机（其余方面保持沿用源文件）。
+    await tester.enterText(
+      find.widgetWithText(TextField, '127.0.0.1'),
+      '10.0.0.1',
+    );
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.text('保存'),
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(find.text('保存'));
+    await tester.pumpAndSettle();
+
     final saved = SourceNetworkOverrideStore.instance.get('net_seed_test');
     expect(saved, isNotNull);
-    expect(saved!.proxy?.host, '127.0.0.1');
+    // 改过的方面落盘。
+    expect(saved!.proxy?.host, '10.0.0.1');
     expect(saved.proxy?.port, 7890);
+    // 没改过的方面保持 null = 继续继承源文件，源文件更新后能跟着走。
+    expect(saved.hosts, isNull, reason: 'hosts 未改动，不得被钉进用户覆盖');
+    expect(saved.dns, isNull);
+    expect(saved.sni, isNull);
+    expect(saved.ech, isNull);
+
+    // 端到端：源文件更新 hosts 后，未改动的 hosts 方面必须跟随源文件更新，
+    // 而用户改过的 proxy 仍以用户覆盖为准。
+    final updated = _sourceWithNetwork(<String, dynamic>{
+      'proxy': <String, dynamic>{
+        'mode': 'manual',
+        'protocol': 'http',
+        'host': '127.0.0.1',
+        'port': 7890,
+        'username': '',
+      },
+      'hosts': <Map<String, dynamic>>[
+        <String, dynamic>{'ip': '9.9.9.9', 'host': 'cdn.example.com'},
+      ],
+    });
+    final profile = NetworkConfigService.instance.effectiveFor(updated);
+    expect(
+      profile.hosts.map((h) => h.ip),
+      contains('9.9.9.9'),
+      reason: '源文件新 hosts 必须生效（真机故障：陈旧覆盖的坏 IP 屏蔽新源文件 IP）',
+    );
+    expect(profile.hosts.map((h) => h.ip), isNot(contains('1.2.3.4')));
+    expect(profile.proxy.host, '10.0.0.1');
+  });
+
+  testWidgets('清空 SNI 默认值：删除动作必须落盘，不得被静默丢弃',
+      (WidgetTester tester) async {
+    final source = _sourceWithNetwork(<String, dynamic>{
+      'sni': <String, dynamic>{
+        'enabled': true,
+        'defaultSni': 'old.example.com',
+      },
+    });
+
+    await tester.pumpWidget(_wrap(source));
+    await tester.pumpAndSettle();
+
+    // 用户清空 SNI 默认值输入框，这是「删掉这个覆盖」的显式动作。
+    await tester.enterText(
+      find.widgetWithText(TextField, 'old.example.com'),
+      '',
+    );
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.text('保存'),
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(find.text('保存'));
+    await tester.pumpAndSettle();
+
+    // 清空是一次真实改动 ⇒ 必须以用户覆盖落盘。若用 copyWith 传 null，它会被
+    // `x ?? this.x` 当成「保持原值」，改动被判成「与源文件相同」而整份不落盘
+    // ⇒ 用户删了却还在。所以这里断言覆盖存在且 sni 方面被显式写入。
+    final saved = SourceNetworkOverrideStore.instance.get('net_seed_test');
+    expect(
+      saved,
+      isNotNull,
+      reason: '清空 SNI 默认值是用户的显式改动，必须落盘而非被丢弃',
+    );
+    expect(saved!.sni, isNotNull);
+    expect(saved.sni!.defaultSni, isNull);
+
+    // 端到端：运行时确实不再带上被删掉的 SNI 值。
+    final profile = NetworkConfigService.instance.effectiveFor(source);
+    expect(
+      profile.sni.defaultSni,
+      isNull,
+      reason: '用户清空后运行时不得再沿用源自带的 defaultSni',
+    );
   });
 }

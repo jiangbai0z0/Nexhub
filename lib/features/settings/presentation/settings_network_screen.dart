@@ -124,10 +124,15 @@ class _SettingsNetworkScreenState extends State<SettingsNetworkScreen> {
         dotHost: _dotHostCtrl.text.trim(),
         dotPort: int.tryParse(_dotPortCtrl.text.trim()) ?? 853,
       ),
-      sni: _draft.sni.copyWith(
+      // defaultSni 不能用 copyWith：它用 `x ?? this.x`，而「清空输入框」的
+      // 语义就是 null，传 null 会被当成「保持原值」⇒ 用户清空后仍留着旧值，
+      // 删除操作静默失效（运行时 normalize(null) = 不覆盖，正是用户要的结果）。
+      sni: SniConfig(
         defaultSni: _sniDefaultCtrl.text.trim().isEmpty
             ? null
             : _sniDefaultCtrl.text.trim(),
+        domainSni: _draft.sni.domainSni,
+        enabled: _draft.sni.enabled,
       ),
       ech: _draft.ech.copyWith(echConfigList: _echCtrl.text.trim()),
     );
