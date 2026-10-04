@@ -7,6 +7,9 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:nexhub/core/network/model/effective_network_profile.dart';
+import 'package:nexhub/core/network/model/network_config.dart';
+import 'package:nexhub/core/network/model/source_network_config.dart';
 import 'package:nexhub/core/scraper/http_fetcher.dart';
 import 'package:nexhub/core/scraper/verification_detector.dart';
 import 'package:nexhub/core/services/config_loader.dart';
@@ -210,4 +213,54 @@ void main() {
       await close();
     }
   }, timeout: const Timeout(Duration(seconds: 30)));
+
+  test('hosts 多候选 + 403：丢弃连接池后重解析换到下一个候选 IP', () async {
+    // 真机自愈路径的行为契约：`hanime1.me` 的 hosts 快照 8 条里 5 条返回
+    // 403 + error 1034（TCP 通、仅应用层失败）。若 403 后只做退避重试而不换
+    // 连接池，Dart 连接池会继续复用那条绑定在坏 IP 上的 keep-alive 连接
+    // （探针实证：4 次请求 connectionFactory 只被调用 2 次），轮转是空转。
+    // 本用例把「坏 IP」和「好 IP」绑在同一端口上，用响应体区分谁被命中。
+    const restricted = '<html><body><h1>Error 1034</h1>'
+        '<p>error code: 1034</p></body></html>';
+    const badIp = '127.0.0.1';
+    const goodIp = '127.0.0.2';
+    final bad = await HttpServer.bind(InternetAddress.tryParse(badIp)!, 0);
+    final port = bad.port;
+    bad.listen((req) async {
+      req.response.statusCode = 403;
+      req.response.headers.set('content-type', 'text/html; charset=utf-8');
+      req.response.add(utf8.encode(restricted));
+      await req.response.close();
+    });
+    // 同一端口绑另一个 loopback 地址（不同本地地址可共用端口号）。
+    final good = await HttpServer.bind(InternetAddress.tryParse(goodIp)!, port);
+    good.listen((req) async {
+      req.response.statusCode = 200;
+      req.response.headers.set('content-type', 'text/html; charset=utf-8');
+      req.response.add(utf8.encode('<html><body>good-B</body></html>'));
+      await req.response.close();
+    });
+    try {
+      // hosts 顺序「先坏后好」：轮转游标从 0 开始，首次必撞坏 IP。
+      final net = EffectiveNetworkProfile.fromConfig(
+        NetworkConfig.defaults,
+        override: const SourceNetworkConfig(
+          hosts: <HostsEntry>[
+            HostsEntry(ip: badIp, host: 'probe.test'),
+            HostsEntry(ip: goodIp, host: 'probe.test'),
+          ],
+        ),
+      );
+      final body = await HttpFetcher.instance.getHtml(
+        'http://probe.test:$port/probe',
+        net: net,
+      );
+      // 命中好 IP 的响应体 ⇒ 换 IP 真的生效了。没有 _dropConnectionPool 时，
+      // 第二次请求会复用绑定在坏 IP 上的连接，拿回 1034 文本 → 此处失败。
+      expect(body, contains('good-B'));
+    } finally {
+      await bad.close(force: true);
+      await good.close(force: true);
+    }
+  }, timeout: const Timeout(Duration(seconds: 60)));
 }

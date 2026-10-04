@@ -5,7 +5,7 @@ library;
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:math' show Random;
+import 'dart:math' show Random, max;
 import 'package:dio/dio.dart';
 import 'package:dio/io.dart';
 import 'package:fast_gbk/fast_gbk.dart';
@@ -228,33 +228,40 @@ class HttpFetcher {
     ));
 
     dio.httpClientAdapter = IOHttpClientAdapter(
-      createHttpClient: () {
-        try {
-          final service = NetworkConfigService.instance;
-          final effective = profile ?? service.globalProfile;
-          final client = NetworkClientBuilder.buildHttpClient(
-            effective,
-            proxyPassword: service.proxyPassword,
-          );
-          // 向后兼容：静态 forceDirect / proxy 覆盖（仅对默认档案生效）。
-          if (profile == null) {
-            if (forceDirect) {
-              client.findProxy = (_) => 'DIRECT';
-            } else if (proxy != null && proxy!.isNotEmpty) {
-              client.findProxy = (_) => 'PROXY $proxy';
-            }
-          }
-          return client;
-        } on Object catch (e, st) {
-          // 构建档案失败：回退裸客户端（保留自签容忍），保证该源仍可系统直连。
-          debugPrint('HttpFetcher._createDio fallback: $e\n$st');
-          final client = HttpClient();
-          client.badCertificateCallback = (cert, host, port) => true;
-          return client;
-        }
-      },
+      createHttpClient: () => _httpClientFor(profile),
     );
     return dio;
+  }
+
+  /// 构造某档案的裸 [HttpClient]（= 一个连接池的载体）。
+  ///
+  /// 独立成方法是为了让 [_dropConnectionPool] 能在**不重建 Dio** 的前提下换掉
+  /// 整个连接池——同一工厂产出的新客户端语义与初始完全一致（同样的代理/hosts/
+  /// SNI 配置），只是池子是空的。
+  HttpClient _httpClientFor(EffectiveNetworkProfile? profile) {
+    try {
+      final service = NetworkConfigService.instance;
+      final effective = profile ?? service.globalProfile;
+      final client = NetworkClientBuilder.buildHttpClient(
+        effective,
+        proxyPassword: service.proxyPassword,
+      );
+      // 向后兼容：静态 forceDirect / proxy 覆盖（仅对默认档案生效）。
+      if (profile == null) {
+        if (forceDirect) {
+          client.findProxy = (_) => 'DIRECT';
+        } else if (proxy != null && proxy!.isNotEmpty) {
+          client.findProxy = (_) => 'PROXY $proxy';
+        }
+      }
+      return client;
+    } on Object catch (e, st) {
+      // 构建档案失败：回退裸客户端（保留自签容忍），保证该源仍可系统直连。
+      debugPrint('HttpFetcher._createDio fallback: $e\n$st');
+      final client = HttpClient();
+      client.badCertificateCallback = (cert, host, port) => true;
+      return client;
+    }
   }
 
   /// 按有效档案取/建 Dio：
@@ -265,6 +272,36 @@ class HttpFetcher {
     final globalSig = NetworkConfigService.instance.globalProfile.signature;
     if (p.signature == globalSig) return _dio;
     return _dioByProfile.putIfAbsent(p.signature, () => _createDio(p));
+  }
+
+  /// 丢弃指定档案的连接池，强制下一次请求重新建连（从而重新解析 hosts 轮转）。
+  ///
+  /// **为什么必须这么做（真机实证）**：Dart `HttpClient` 的连接池在收到 403 响应
+  /// 后**仍认定该 keep-alive 连接可复用**（403 不触发连接失效）。探针实测：4 次
+  /// 请求、`connectionFactory` 只被调用 2 次，坏 IP 的连接被反复取回；换
+  /// `Connection: close` 请求头也压不住（第 3 次仍命中旧连接）。因此仅靠
+  /// `DnsResolver` 的 hosts 轮转游标是**空转**——必须连池子一起换，新连接才会再
+  /// 走一次连接工厂、拿到下一个候选 IP。
+  ///
+  /// 实现要点：**不能对已挂在 Dio 上的 adapter 调 `close()`**——`IOHttpClientAdapter
+  /// .close()` 会把内部 `_closed` 置 true，此后该 adapter 的每次 fetch 都直接抛
+  /// `StateError`（永久不可用）。正确做法是给 Dio 换上一个全新的 adapter（同一
+  /// [_httpClientFor] 工厂 ⇒ 代理/hosts/SNI 语义与初始完全一致，只是池子是空的），
+  /// 再把被丢弃的旧 adapter 优雅关闭：不打断正在并发的请求，只是握手后不再复用。
+  void _dropConnectionPool(EffectiveNetworkProfile? net) {
+    final Dio dio = _dioFor(net);
+    // 与 _dioFor 的归一化保持一致：默认 Dio 用 null 档案建客户端，以保留
+    // forceDirect / proxy 的向后兼容覆盖分支。
+    final globalSig = NetworkConfigService.instance.globalProfile.signature;
+    final bool isDefault = net == null || net.signature == globalSig;
+    final EffectiveNetworkProfile? profile = isDefault ? null : net;
+    final HttpClientAdapter old = dio.httpClientAdapter;
+    dio.httpClientAdapter = IOHttpClientAdapter(
+      createHttpClient: () => _httpClientFor(profile),
+    );
+    // adapter.close() 默认 force=false = 优雅关闭：空闲连接立即释放，活跃连接
+    // 完成本次请求后再关闭（不会像 force=true 那样掐断并发请求）。
+    if (old is IOHttpClientAdapter) old.close();
   }
 
   /// 重建所有 Dio（全局配置变更时调用）：丢弃旧连接池，新配置即时生效。
@@ -483,7 +520,14 @@ class HttpFetcher {
   // Cloudflare 等限流/IP 软封禁多为短窗口，短暂退避后重试常常直接放行，
   // 避免单次抖动直接弹验证提示打断浏览。带挑战体（JS 挑战页/滑块）或 401
   // 仍立即上抛走 WebView 验证流程，不在此重试。
+  //
+  // 这只在「该 host 没有 hosts 候选」时是最终预算；有候选时按候选数自适应
+  // （[_retry403Budget]），因为这类 403 往往只能靠换 IP 解决。
   static const int _max403Retries = 2;
+
+  // 403 自适应重试的封顶：退避是 1.5s 递增（1500/3000/4500…），候选再多也不能
+  // 让单次抓取无限期挂着——用户宁可看到验证提示，也不要转圈半分钟。
+  static const int _max403RetriesCap = 5;
   // 手动跟随重定向的最大跳数（防重定向循环打爆）。
   static const int kMaxRedirects = 5;
   // 同 host 最小间隔：原 500ms，上调到 800ms 进一步降低「短时间内连续请求
@@ -702,7 +746,12 @@ class HttpFetcher {
     EffectiveNetworkProfile? net,
   ) async {
     DioException? lastErr;
-    for (var attempt = 0; attempt <= _maxHttpRetries; attempt++) {
+    // 外层循环上限必须能容纳 403 路径的自适应预算：否则重试还没走完 hosts 候选表，
+    // 循环先耗尽 → 掉到底部兜底 Exception，丢掉 VerificationRequiredException
+    // 的验证语义（调用方就弹不出验证提示了）。
+    final int budget403 = _retry403Budget(url, net);
+    final int maxAttempts = max(_maxHttpRetries, budget403);
+    for (var attempt = 0; attempt <= maxAttempts; attempt++) {
       try {
         return await _getHtmlOnce(url, headers, referer, net);
       } on DioException catch (e) {
@@ -734,23 +783,56 @@ class HttpFetcher {
           body: e.body,
         );
         if (!hard403 && !edgeIpRestricted) rethrow;
-        // 403 预算对齐外层循环上限：重试耗尽时把最后一次的
-        // VerificationRequiredException（含冷却已写入）原样上抛，保住验证语义，
-        // 不掉进底部兜底 Exception 丢失类型。
-        if (attempt >= _max403Retries || attempt >= _maxHttpRetries) rethrow;
+        // 重试耗尽时把最后一次的 VerificationRequiredException（含冷却已写入）
+        // 原样上抛，保住验证语义。
+        if (attempt >= budget403) rethrow;
         // 每次失败 _recordAndThrowVerify 都会写入验证冷却（影响后续新请求的
         // 闸门），重试成功恢复后不应让同站请求再被 20s 冷却误伤——循环内在
         // 403 路径上清掉；重试耗尽时最后一次异常的冷却保留生效。
         _clearVerifyCooldown(url);
         if (edgeIpRestricted) {
           debugPrint('HttpFetcher: Cloudflare 1034 (Edge IP Restricted) on '
-              '$url — 换 IP 重试 attempt=${attempt + 1}');
+              '$url — 换 IP 重试 attempt=${attempt + 1}/$budget403');
         }
+        // 换 IP 之前必须先换连接池，否则轮转是空转（真机实证与原因见
+        // [_dropConnectionPool]）。仅在真的有候选 IP 可换时才付这个代价——
+        // 纯限流的硬 403 保留原连接更省一次握手。
+        if (_hostCandidateCount(url, net) > 1) _dropConnectionPool(net);
         await Future.delayed(_retry403Backoff(attempt));
       }
     }
     // 不可达：循环耗尽却未成功（理论上不会发生，仅兜底）。
     throw lastErr ?? Exception('HTTP 重试耗尽: $url');
+  }
+
+  /// 该 host 在有效档案里的 hosts 候选 IP 数（无档案 / 无匹配 / host 为空时 0）。
+  int _hostCandidateCount(String url, EffectiveNetworkProfile? net) {
+    final hosts = net?.hosts;
+    if (hosts == null || hosts.isEmpty) return 0;
+    final host = Uri.tryParse(url)?.host.toLowerCase() ?? '';
+    if (host.isEmpty) return 0;
+    var count = 0;
+    for (final h in hosts) {
+      if (h.enabled && h.ip.isNotEmpty && h.host.toLowerCase() == host) count++;
+    }
+    return count;
+  }
+
+  /// 403 路径的自适应重试预算：让重试次数足以走遍该 host 的 hosts 候选。
+  ///
+  /// hosts 表里的坏 IP（Cloudflare 1034 之类）**只能靠换 IP 解决**，而候选表常
+  /// 有 5~8 条、坏的可能占多数（真机实测 `hanime1.me` 8 条里 5 条不可用）。固定
+  /// 2 次重试（共 3 次尝试）走不完候选表，用户看到的就是「验证提示反复弹」。
+  /// 因此按候选数把预算放宽到「覆盖一轮所有候选」，用 [_max403RetriesCap] 封顶；
+  /// 无候选时保持 [_max403Retries]，行为与旧版一致。
+  int _retry403Budget(String url, EffectiveNetworkProfile? net) {
+    final candidates = _hostCandidateCount(url, net);
+    if (candidates <= 1) return _max403Retries;
+    final int wanted = candidates - 1;
+    return max(
+      _max403Retries,
+      wanted > _max403RetriesCap ? _max403RetriesCap : wanted,
+    );
   }
 
   /// 403 重试退避时长：限流窗口需要比连接抖动更长的等待，
