@@ -16,6 +16,7 @@ import 'package:material_ui/material_ui.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:nexhub/generated/app_localizations.dart';
 
+import '../../../core/network/runtime/webview_source_network.dart';
 import '../../../core/scraper/http_fetcher.dart';
 import '../../../core/settings/advanced_settings.dart';
 import '../../../core/storage/cache_inventory.dart';
@@ -113,8 +114,18 @@ class _SettingsAdvancedScreenState extends State<SettingsAdvancedScreen> {
     final ok = await _confirm(context, l10n, l10n.clearCookies);
     if (!ok || !context.mounted) return;
     HttpFetcher.instance.clearCookies();
+    // 默认环境与 Windows 代理环境（--proxy-server 独立 WebView2 profile）的
+    // cookie 存储互不相通，两处都要清，否则「清除 Cookie」后验证态仍在，
+    // 旧 cf_clearance 与新会话错配 → 反复弹验证。
     try {
       await CookieManager.instance().deleteAllCookies();
+    } catch (_) {}
+    try {
+      final env = WebviewSourceNetwork.instance.activeEnvironment;
+      if (env != null) {
+        await CookieManager.instance(webViewEnvironment: env)
+            .deleteAllCookies();
+      }
     } catch (_) {}
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(

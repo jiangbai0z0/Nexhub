@@ -41,6 +41,26 @@ void main() {
     expect(map['b.com'], 'y=2');
   });
 
+  test('loadDetailed 连 ua 一起带回（冷启动恢复 UA 绑定）', () async {
+    await CookieStore.save('d.com', 'k=3', 'UA-D');
+    final detailed = await CookieStore.loadDetailed();
+    expect(detailed['d.com'], isNotNull);
+    expect(detailed['d.com']!['cookie'], 'k=3');
+    expect(detailed['d.com']!['ua'], 'UA-D',
+        reason: 'load() 丢弃 ua 会导致冷启动后抓取请求 UA 与 cookie 绑定失配');
+  });
+
+  test('loadDetailed 同样过滤过期条目', () async {
+    final box = Hive.box('http_cookies');
+    await box.put('stale.com', <String, String>{
+      'cookie': 's=1',
+      'ua': 'UA-s',
+      'updatedAt':
+          DateTime.now().subtract(const Duration(days: 8)).toIso8601String(),
+    });
+    expect((await CookieStore.loadDetailed())['stale.com'], isNull);
+  });
+
   test('超过 TTL 的条目视为不存在', () async {
     // 手动写入一个 8 天前的记录（远超 7 天 TTL）。
     final box = Hive.box('http_cookies');

@@ -119,6 +119,21 @@ class HttpFetcher {
     _hostUaOverrides[host] = ua;
   }
 
+  /// 测试专用：暴露 [_mergeHeaders] 的真实结果，用于锁死「宿主级 UA 覆盖必须
+  /// 进入实际请求头」这一契约（验证屏/登录屏注册的浏览器 UA 与抓取请求共
+  /// 用，cf_clearance 才不会失效）。
+  @visibleForTesting
+  Map<String, String> debugMergedHeaders({
+    String? referer,
+    Map<String, String>? extra,
+    String? url,
+  }) =>
+      _mergeHeaders(referer, extra, url);
+
+  /// 测试专用：清除宿主级 UA 覆盖，避免用例间串味。
+  @visibleForTesting
+  void debugClearHostUserAgents() => _hostUaOverrides.clear();
+
   static final List<_BrowserProfile> _profiles = const <_BrowserProfile>[
     _BrowserProfile(
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -362,10 +377,17 @@ class HttpFetcher {
   /// （冷启动即丢 Cookie 是「反复验证 → 高频请求 → IP 被封」的首要根因）。
   Future<void> loadPersistedCookies() async {
     try {
-      final persisted = await CookieStore.load();
+      final persisted = await CookieStore.loadDetailed();
       for (final e in persisted.entries) {
-        final normalized = _normalizeCookieHeader(e.value);
-        if (normalized.isNotEmpty) _cookieJar[e.key] = normalized;
+        final normalized = _normalizeCookieHeader(e.value['cookie'] ?? '');
+        if (normalized.isEmpty) continue;
+        _cookieJar[e.key] = normalized;
+        // 一并恢复该 host 记录里的 UA：cf_clearance / turnstile 通过态绑定 UA，
+        // 冷启动只回灌 Cookie 而让 UA 落到随机指纹档案 → 会话立即失效。
+        final ua = e.value['ua'];
+        if (ua != null && ua.isNotEmpty) {
+          _hostUaOverrides[e.key] = ua;
+        }
       }
     } catch (e, st) {
       debugPrint('loadPersistedCookies failed: $e\n$st');
@@ -495,14 +517,30 @@ class HttpFetcher {
     final host = Uri.tryParse(url ?? '')?.host;
     final profile = _profiles[_profileIndexFor(host)];
     final customUa = _customUa();
+    // 宿主级 UA 覆盖（验证屏/登录屏经 [registerHostUserAgent] 注册的完整浏览器
+    // UA）必须与 WebView 保持一致：Cloudflare 的 cf_clearance 与 turnstile 通过态
+    // 绑定「验证时那个 UA」，一旦抓取请求改用指纹档案 UA，该会话对抓取请求即失效
+    // → 每次点击都要求重新验证。此前只有图片/播放器/WebView 走 [userAgentForUrl]
+    // 读取覆盖，HTML/JSON 抓取走指纹档案 —— [userAgentForUrl] 注释里承诺的
+    // 「直连请求 == WebView 验证 == 重试 三处 UA 一致」从未真正落实。
+    final hostUa = host == null ? null : _hostUaOverrides[host];
+    final overrideUa = (hostUa != null && hostUa.isNotEmpty) ? hostUa : null;
+    final uaIsHostOverride = customUa.isEmpty && overrideUa != null;
     final merged = <String, String>{
       // 浏览器指纹：UA 与 Sec-Ch-Ua 品牌配套，避免自爆。
       // 「默认 UA」非空时用户指定固定 UA，指纹档案的 Sec-Ch-Ua 仍保留
       // （作为配套品牌声明，尽力避免因缺头被 WAF 拦截）。
-      'User-Agent': customUa.isNotEmpty ? customUa : profile.ua,
-      'Sec-Ch-Ua': profile.secChUa,
-      'Sec-Ch-Ua-Mobile': profile.secChUaMobile,
-      'Sec-Ch-Ua-Platform': profile.secChUaPlatform,
+      // 覆盖 UA 来自 WebView（移动端 Android/桌面 Chromium），与指纹档案的品牌
+      // 通常不符；UA 与客户端提示自相矛盾本身就是显眼的自动化特征，故此时
+      // 不再声明 Sec-Ch-Ua 三家头。
+      'User-Agent': customUa.isNotEmpty
+          ? customUa
+          : (overrideUa ?? profile.ua),
+      if (!uaIsHostOverride) ...<String, String>{
+        'Sec-Ch-Ua': profile.secChUa,
+        'Sec-Ch-Ua-Mobile': profile.secChUaMobile,
+        'Sec-Ch-Ua-Platform': profile.secChUaPlatform,
+      },
       // 现代浏览器标准头：WAF/Cloudflare 用这些判定是否真人。缺了极易被拦。
       'Accept':
           'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',

@@ -307,12 +307,20 @@ class _WebViewVerificationScreenState extends State<WebViewVerificationScreen> {
     Navigator.of(context).pop(VerificationResult.done);
   }
 
+  /// Cookie 存储读取器：Windows 验证 WebView 挂在 --proxy-server 的 WebView2
+  /// 环境上，其 cookie 存储与默认环境隔离——读取必须绑定同一环境，否则读到
+  /// 空存储，cf_clearance 永远回灌不到 HttpFetcher → 验证通过后仍反复弹验证。
+  /// 移动端 activeEnvironment 为 null，与全局共享存储行为一致。
+  CookieManager _cookieManager() => CookieManager.instance(
+        webViewEnvironment: WebviewSourceNetwork.instance.activeEnvironment,
+      );
+
   /// 同步内嵌 WebView 的 Cookie 到 HttpFetcher（best-effort，跨域父域匹配）。
   Future<void> _syncWebviewCookies() async {
     try {
       final uri = Uri.tryParse(widget.verificationUrl);
       if (uri == null) return;
-      final cookies = await CookieManager.instance().getCookies(
+      final cookies = await _cookieManager().getCookies(
         url: WebUri('${uri.scheme}://${uri.host}'),
       );
       if (cookies.isEmpty) return;

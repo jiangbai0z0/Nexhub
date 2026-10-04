@@ -55,6 +55,23 @@ class CookieStore {
     return out;
   }
 
+  /// 读取所有未过期记录（`host -> {cookie, ua, updatedAt}`）。
+  ///
+  /// 与 [load] 的区别：保留记录里的 `ua`。反爬会话（cf_clearance / turnstile
+  /// 通过态）绑定验证时的 UA，冷启动回灌时若只恢复 Cookie 而把 UA 换成随机指纹
+  /// 档案，落盘的会话立即失效 → 又要重新验证。故回灌需同时恢复 UA。
+  static Future<Map<String, Map<String, String>>> loadDetailed() async {
+    await _ensureOpen();
+    final out = <String, Map<String, String>>{};
+    for (final key in _box!.keys) {
+      final rec = _box!.get(key);
+      if (rec is Map && !_isExpired(rec)) {
+        out[key.toString()] = Map<String, String>.from(rec);
+      }
+    }
+    return out;
+  }
+
   /// 持久化单个 host 的 cookie 与该 host 当时 UA（UA 配套验证回灌，防漂移）。
   static Future<void> save(String host, String cookie, String ua) async {
     await _ensureOpen();

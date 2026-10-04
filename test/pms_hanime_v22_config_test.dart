@@ -15,9 +15,9 @@ void main() {
     source = PluginConfig.fromJson(map);
   });
 
-  group('pms_hanime v25 配置消费', () {
-    test('版本号与基础块保持 v21 兼容（v25 = tags 面 7 组 235 值 + tags[] 数组路由）', () {
-      expect(source.version, 25);
+  group('pms_hanime v22→v27 配置消费', () {
+    test('版本号与基础块保持 v21 兼容（v27 = 去 bot UA + favList 两跳 meta）', () {
+      expect(source.version, 27);
       expect(source.id, 'pms_hanime');
       expect(source.type, SourceType.animeSource);
       expect(source.routes.containsKey('latest'), isTrue);
@@ -210,6 +210,41 @@ void main() {
       expect(paramsOf('ai-generated')['sort'], '最新上傳');
       expect(paramsOf('mmd')['genre'], 'MMD');
       expect(paramsOf('cosplay')['genre'], 'Cosplay');
+    });
+
+    test('v27 去 bot UA：不再用 Dart/3.13 冒充浏览器，改为信任 WebView 注册的真实 UA', () {
+      final raw = File('plugins/builtin/pms_hanime.json').readAsStringSync();
+      expect(raw.contains('Dart/3.13'), isFalse,
+          reason: 'bot UA 由源声明并经 _mergeHeaders 的 ...?extra 覆盖基础 UA，'
+              '导致验证 WebView 的 UA 与后续抓取请求不一致 → cf_clearance 失效、反复弹验证');
+      expect(source.site.userAgent, anyOf(isNull, isEmpty),
+          reason: 'site.userAgent 已移除');
+      for (final e in source.routes.entries) {
+        expect(e.value.headers?.containsKey('User-Agent') ?? false, isFalse,
+            reason: '路由 ${e.key} 不应再声明 User-Agent');
+      }
+      expect(source.antiHotlinking.userAgent, anyOf(isNull, isEmpty),
+          reason: 'antiHotlinking.userAgent 已移除');
+      // Referer 必须保留（站点校验来源）
+      expect(source.routes['search']!.headers?['Referer'], isNotNull);
+      expect(source.antiHotlinking.referer, 'https://hanime1.me');
+    });
+
+    test('v27 favList 两跳：首页输入先取 uid 再抓 /user/{uid}/likes', () {
+      final ov = source.parser.overrides ?? const <String, ParserOverride>{};
+      final script = ov['favList']?.script ?? '';
+      expect(script, contains('favListParse'),
+          reason: '原解析体改名保留，作为 meta 第二跳处理器');
+      expect(script, contains('user-modal-trigger'),
+          reason: '从首页 #user-modal-trigger 提 uid（登录后 href=/user/{uid}）');
+      expect(script, contains("'/user/'"), reason: '拼真实收藏页 URL');
+      expect(script, contains("__processor:'favListParse'"),
+          reason: 'meta 协议第二跳处理器名');
+      expect(script, contains("__fetchResponseType:'text'"),
+          reason: '收藏页是 HTML，须以 text 抓取');
+      // 引擎入口 fallback 契约（_runScriptWithRaw: entry = override.function ?? apiName）
+      expect(script, contains('function favList('));
+      expect(script, contains('function favListParse('));
     });
   });
 }

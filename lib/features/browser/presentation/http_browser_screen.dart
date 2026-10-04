@@ -246,11 +246,17 @@ class _HttpBrowserScreenState extends State<HttpBrowserScreen> {
   }
 
   /// 读取 [InAppWebView] 的 [CookieManager] Cookie 写回 [HttpFetcher]（best-effort）。
+  ///
+  /// Cookie 存储必须绑定 WebView 所在的 WebView2 环境（Windows 上挂
+  /// --proxy-server 的是独立 profile）：用默认 `CookieManager.instance()`
+  /// 会读到空存储 → 页面上已通过的验证/Cookie 回灌不到 HttpFetcher。
   Future<void> _syncCookiesToFetcher(String url) async {
     try {
       final uri = Uri.tryParse(url);
       if (uri == null) return;
-      final cookies = await CookieManager.instance().getCookies(
+      final cookies = await CookieManager.instance(
+        webViewEnvironment: _env,
+      ).getCookies(
         url: WebUri('${uri.scheme}://${uri.host}'),
       );
       if (cookies.isEmpty) return;

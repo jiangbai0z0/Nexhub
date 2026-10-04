@@ -5,8 +5,14 @@
 // 不影响 UA 等确定性行为）。不发起真实网络请求。
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nexhub/core/scraper/http_fetcher.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
+  // 裸 test() 不会自动初始化 Binding；HttpFetcher 单例构造会触达
+  // AdvancedSettingsStore → SharedPreferences 平台通道，缺这两行必然全红。
+  TestWidgetsFlutterBinding.ensureInitialized();
+  SharedPreferences.setMockInitialValues(const <String, Object>{});
+
   group('HttpFetcher.rebuildAll', () {
     test('多次调用幂等，不抛异常', () {
       expect(() => HttpFetcher.instance.rebuildAll(), returnsNormally);
