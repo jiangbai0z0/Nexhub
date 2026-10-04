@@ -723,7 +723,17 @@ class HttpFetcher {
         // 与 401（会话失效）不是重试能解决的，立即上抛走原有验证流程。
         final bool hard403 =
             e.statusCode == 403 && (e.body?.trim().isEmpty ?? true);
-        if (!hard403) rethrow;
+        // Cloudflare「Edge IP Restricted」(error 1034)：该边缘 IP 未获本站授权，
+        // 是**按 IP 判定**的选路失败——无任何可交互验证要素，用户点验证永远过不
+        // 去；但换一个已授权的边缘 IP 即可恢复。源站 hosts 表常抄到会过期的 CF
+        // 边缘 IP 快照，坏 IP 的 TCP 是通的（CF 边缘对任何 IP 都完成握手）→ 连接
+        // 层判定成功 → 应用层拿到这段 403 文本。因此把它当作可重试的选路失败：
+        // 退避后重试，让 DnsResolver 轮转到下一个候选 IP。
+        final bool edgeIpRestricted = VerificationDetector.isEdgeIpRestricted(
+          statusCode: e.statusCode,
+          body: e.body,
+        );
+        if (!hard403 && !edgeIpRestricted) rethrow;
         // 403 预算对齐外层循环上限：重试耗尽时把最后一次的
         // VerificationRequiredException（含冷却已写入）原样上抛，保住验证语义，
         // 不掉进底部兜底 Exception 丢失类型。
@@ -732,6 +742,10 @@ class HttpFetcher {
         // 闸门），重试成功恢复后不应让同站请求再被 20s 冷却误伤——循环内在
         // 403 路径上清掉；重试耗尽时最后一次异常的冷却保留生效。
         _clearVerifyCooldown(url);
+        if (edgeIpRestricted) {
+          debugPrint('HttpFetcher: Cloudflare 1034 (Edge IP Restricted) on '
+              '$url — 换 IP 重试 attempt=${attempt + 1}');
+        }
         await Future.delayed(_retry403Backoff(attempt));
       }
     }

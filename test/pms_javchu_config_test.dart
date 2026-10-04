@@ -36,23 +36,46 @@ void main() {
       }
     });
 
-    test('hosts：hanime1.me 五条 Cloudflare IP（与 hanime 源同池，沙箱 --resolve 实证服务 AV 分区）', () {
+    test('hosts：hanime1.me 三条官方 DNS 实测 IP（v5 换掉会过期的 CF 快照）', () {
       final hosts = source.network?.hosts ?? const <dynamic>[];
       final meHosts = hosts.where((h) => '${h.host}' == 'hanime1.me').toList();
-      expect(meHosts.length, 5,
-          reason: 'v4 迁移后与 pms_hanime 同池：5 条 CF 边缘 IP');
+      expect(meHosts.length, 3,
+          reason: 'v5 与 pms_hanime v28 同步：doh.pub 权威 A 记录实测可用三值');
       final ips = meHosts.map((h) => '${h.ip}').toSet();
       expect(ips, <String>{
-        '172.64.229.154', '162.159.0.1', '108.162.192.1',
-        '172.64.33.1', '104.19.0.1',
+        '104.26.9.104', '172.67.74.156', '104.26.8.104',
       });
       expect(meHosts.every((h) => '${h.enabled}' == 'true'), isTrue);
+      // 旧 CF 快照 IP：其中 3/5 返回 error 1034（Edge IP Restricted，该边缘 IP
+      // 未获本站授权），TCP 通但应用层 403 弹验证——必须全清。
+      for (final bad in const [
+        '172.64.229.154', '162.159.0.1', '108.162.192.1',
+        '172.64.33.1', '104.19.0.1',
+      ]) {
+        expect(ips.contains(bad), isFalse, reason: 'CF 快照 IP $bad 已剔除');
+      }
       // 死域残留必须清干净——停放域 IP（2.59 WorldStream 死源站 /
       // 104.219 Namecheap 停放页）留着只会 TLS 炸或拉到 parking 页。
       expect(
         ips.intersection(<String>{'2.59.170.20', '104.219.250.37'}),
         isEmpty,
       );
+    });
+
+    test('v5 去 bot UA：源内不再有任何 Dart/3.13 冒充浏览器的声明', () {
+      final raw = File('plugins/builtin/pms_javchu.json').readAsStringSync();
+      expect(raw.contains('Dart/3.13'), isFalse,
+          reason: 'bot UA 覆盖基础 UA → 与验证 WebView 的真实 UA 不一致，'
+              'cf_clearance 会话失效，反复弹验证');
+      expect(source.site.userAgent, anyOf(isNull, isEmpty));
+      expect(source.antiHotlinking.userAgent, anyOf(isNull, isEmpty));
+      for (final e in source.routes.entries) {
+        final headers = e.value.headers;
+        expect(headers?.containsKey('User-Agent') ?? false, isFalse,
+            reason: '路由 ${e.key} 不应再声明 User-Agent');
+      }
+      // Referer 保留（站点校验来源），与 hanime 源同构。
+      expect(source.antiHotlinking.referer, 'https://hanime1.me');
     });
 
     test('死域零残留：javchu.com 域名在交付物中完全消失', () {
@@ -96,7 +119,7 @@ void main() {
         expect(raw.contains(banned), isFalse,
             reason: 'AV 站无此类型：$banned');
       }
-      expect(source.version, 4);
+      expect(source.version, 5);
       expect(source.routes['search']!.url, contains('tags[]={tags}'),
           reason: 'v3 起与 hanime 同构：tags[] 重复参数数组语义');
       expect(raw.contains('&tags={tags}'), isFalse);

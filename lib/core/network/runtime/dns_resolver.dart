@@ -30,6 +30,9 @@ class DnsResolver {
 
   final Map<String, _CacheEntry> _cache = <String, _CacheEntry>{};
 
+  /// Hosts 多候选的轮转游标（按 host 记录上次返回的起始位置）。
+  final Map<String, int> _roundRobinCursor = <String, int>{};
+
   /// 默认缓存 TTL（当解析结果未给出可用 TTL 时使用）。
   static const Duration _defaultTtl = Duration(minutes: 5);
 
@@ -37,7 +40,10 @@ class DnsResolver {
   int get cacheSize => _cache.length;
 
   /// 清空缓存。
-  void clearCache() => _cache.clear();
+  void clearCache() {
+    _cache.clear();
+    _roundRobinCursor.clear();
+  }
 
   /// 解析主机名到 IP 列表。
   ///
@@ -63,8 +69,20 @@ class DnsResolver {
       }
     }
     if (pinned.isNotEmpty) {
-      pinned.shuffle();
-      return pinned;
+      // 轮转（round-robin）而非纯随机打乱：同 host 配了多条候选时，每次解析从
+      // 上次的下一个位置开始。纯 shuffle 虽然「避免总是撞同一个地址」，但存在
+      // 连续多次撞中同一个坏地址的概率——当坏地址只在**应用层**失败（TCP 通、
+      // 返回 403/1034 之类）时，连接层的 fallback 帮不上忙，应用层重试只能靠
+      // 重新解析换 IP；轮转保证连续重试必然换到不同候选，把 N 个候选里 1 个坏
+      // 地址的恢复概率从「概率性」提升到「N 次内必然覆盖全部候选」。
+      final rrKey = host.toLowerCase();
+      final cursor = (_roundRobinCursor[rrKey] ?? 0) % pinned.length;
+      _roundRobinCursor[rrKey] = (cursor + 1) % pinned.length;
+      if (cursor == 0) return pinned;
+      return <InternetAddress>[
+        ...pinned.sublist(cursor),
+        ...pinned.sublist(0, cursor),
+      ];
     }
 
     // ② 缓存（仅在启用时）。解析名含后缀，避免不同后缀互相串缓存。

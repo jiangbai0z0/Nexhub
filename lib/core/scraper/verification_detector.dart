@@ -138,6 +138,36 @@ class VerificationDetector {
     'edge/1.1',
   ];
 
+  /// Cloudflare「Edge IP Restricted」(error 1034) 特征。
+  ///
+  /// 语义：**该边缘 IP 未获本站授权**——请求确实到了 Cloudflare，但命中的这台
+  /// 边缘服务器不属于本域名的接入 IP 集合，CF 直接以 403 拒绝，响应体是一段
+  /// 纯文本错误页（实测≈2.3KB gzip / 17B～7.4KB 明文，标题 `Edge IP Restricted`）。
+  ///
+  /// 关键区别：这**不是**需要用户交互的反爬挑战（无 5 秒盾、无滑块、无 CAPTCHA），
+  /// 用户点验证也永远过不去；但它是**按 IP 判定**的，换一个已授权的边缘 IP 即可
+  /// 恢复。因此调用方应把它当作「可重试的选路失败」——换 IP 重试——而不是弹
+  /// 验证页。
+  ///
+  /// 背景：源站 hosts 表常从社区配置抄一份会过期的 CF 边缘 IP 快照，其中部分
+  /// IP 早已不在该域名的接入集合里；连接层只要 TCP 通则判定成功（CF 边缘对任何
+  /// IP 都会完成握手），坏 IP 于是被长期误用。
+  static const List<String> _edgeIpRestrictedMarkers = <String>[
+    'error code: 1034',
+    'edge ip restricted',
+  ];
+
+  /// 该响应是否为 Cloudflare「Edge IP Restricted」(1034) —— 按 IP 授权判定，
+  /// 换 IP 可恢复，不应弹交互式验证。
+  static bool isEdgeIpRestricted({int? statusCode, String? body}) {
+    if (statusCode != 403 || body == null || body.isEmpty) return false;
+    // 该错误页体积极小；先按长度闸门排除正常大页面，避免正常 403 页（含同名字样
+    // 的文章/评论）被误判。实测最大 7.4KB 明文，留 8 倍余量到 64KB。
+    if (body.length > 64 * 1024) return false;
+    final lower = body.toLowerCase();
+    return _edgeIpRestrictedMarkers.any((f) => lower.contains(f.toLowerCase()));
+  }
+
   /// 检查顺序：403/401 先于「无 body」；503 解码 body 后看挑战特征；
   /// 200 + 主动挑战标记 / (被动CF标记 + 极短壳) / WAF 拦截应答 也判。
   static bool isVerificationRequired({
@@ -147,6 +177,9 @@ class VerificationDetector {
   }) {
     final code = statusCode;
     if (code == 401 || code == 403) return true;
+    // 注意：403 中的 CF「Edge IP Restricted」(1034) 也会走到这里（true）——
+    // 保持「403 一律需要处理」的语义不变，但调用方可先用 [isEdgeIpRestricted]
+    // 区分「换 IP 可自愈」与「需要用户交互」，对它做选路重试而非弹验证页。
     if (code == 503) {
       // 503 本身已是强挑战信号：CF 的 503 挑战页含被动标记且体积极小，
       // 不做长度闸门，避免漏判。

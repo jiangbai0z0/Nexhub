@@ -12,6 +12,9 @@
 //
 // 环境创建与 cookie 桥的真机行为（WebView2 环境创建成功/cookie 双向同步）桌面
 // 沙箱无法端到端验证，由用户真机验证。
+import 'dart:async';
+import 'dart:io';
+
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nexhub/core/models/plugin_config.dart';
@@ -170,6 +173,132 @@ void main() {
       final net = WebviewSourceNetwork.instance;
       await net.applyForSource(null);
       expect(net.activeEnvironment, isNull);
+    });
+  });
+
+  group('CONNECT 目标解析（HTTPS 隧道 host:port）', () {
+    // dart:io 对 CONNECT 的 uri 解析有坑：实测 `CONNECT hanime1.me:443` 得到
+    // scheme=`hanime1.me` / path=`443` / host=authority=空串。原实现因此算出
+    // host='' → Socket.connect('', 443) → Windows errno 1225，WebView 经本地
+    // 代理的所有 HTTPS 流量全灭（设备日志 8 条 tunnel(:443) failed）。
+    // 唯一可靠来源是 Host 头。这里用真实 loopback HttpServer 收 CONNECT 请求，
+    // 在 handler 内直接断言解析结果。
+    Future<(String, int)> captureConnectTarget(
+      String requestLine, {
+      List<String> extraHeaders = const [],
+    }) async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final completer = Completer<(String, int)>();
+      server.listen((req) {
+        try {
+          completer.complete(
+            WebviewSourceNetwork.instance.debugParseConnectTarget(req, 443),
+          );
+        } on Object catch (e, st) {
+          if (!completer.isCompleted) completer.completeError(e, st);
+        }
+        req.response.statusCode = 200;
+        req.response.close();
+      });
+      final sock = await Socket.connect(InternetAddress.loopbackIPv4, server.port);
+      sock.write('$requestLine\r\n');
+      for (final h in extraHeaders) {
+        sock.write('$h\r\n');
+      }
+      sock.write('\r\n');
+      await sock.flush();
+      try {
+        return await completer.future.timeout(const Duration(seconds: 10));
+      } finally {
+        sock.destroy();
+        await server.close(force: true);
+      }
+    }
+
+    test('Host 头带端口：解析出真实 host（修复前为空串）', () async {
+      final (host, port) = await captureConnectTarget(
+        'CONNECT hanime1.me:443 HTTP/1.1',
+        extraHeaders: const ['Host: hanime1.me:443'],
+      );
+      expect(host, 'hanime1.me');
+      expect(port, 443);
+    });
+
+    test('Host 头不带端口：回落默认端口', () async {
+      final (host, port) = await captureConnectTarget(
+        'CONNECT example.com:8443 HTTP/1.1',
+        extraHeaders: const ['Host: example.com'],
+      );
+      expect(host, 'example.com');
+      expect(port, 8443, reason: 'Host 无端口时用 defaultPort 兜底');
+    });
+
+    test('非 443 端口原样保留（用于非常规 HTTPS 端口站点）', () async {
+      final (host, port) = await captureConnectTarget(
+        'CONNECT cdn.test:8443 HTTP/1.1',
+        extraHeaders: const ['Host: cdn.test:8443'],
+      );
+      expect(host, 'cdn.test');
+      expect(port, 8443);
+    });
+
+    test('IPv6 字面量：方括号与端口正确拆解（纯函数，socket 无法承载该形态）',
+        () {
+      // `CONNECT [::1]:8443` 这种 request-line 会被 dart:io 的 URL 解析直接拒掉
+      // （handler 根本不触发），只能直接覆盖解析器。
+      expect(
+        WebviewSourceNetwork.debugSplitHostPort('[::1]:8443', 443),
+        ('::1', 8443),
+      );
+      expect(
+        WebviewSourceNetwork.debugSplitHostPort('[2001:db8::1]', 443),
+        ('2001:db8::1', 443),
+      );
+      // 无端口 → 回落 defaultPort；纯端口串 → 缺 host、只补端口。
+      expect(
+        WebviewSourceNetwork.debugSplitHostPort('hanime1.me', 8443),
+        ('hanime1.me', 8443),
+      );
+      expect(
+        WebviewSourceNetwork.debugSplitHostPort('8443', 443),
+        ('', 8443),
+      );
+      // 非法端口（越界/非数字）不冒充端口，回落 defaultPort。
+      expect(
+        WebviewSourceNetwork.debugSplitHostPort('a.test:99999', 443),
+        ('a.test', 443),
+      );
+      expect(
+        WebviewSourceNetwork.debugSplitHostPort('a.test:abc', 443),
+        ('a.test', 443),
+      );
+      expect(WebviewSourceNetwork.debugSplitHostPort('', 443), ('', 443));
+      expect(WebviewSourceNetwork.debugSplitHostPort(null, 443), ('', 443));
+    });
+
+    test('defaultPort 随调用方传入（非 443 的 CONNECT 场景）', () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final completer = Completer<(String, int)>();
+      server.listen((req) {
+        completer.complete(
+          WebviewSourceNetwork.instance.debugParseConnectTarget(req, 8080),
+        );
+        req.response.statusCode = 200;
+        req.response.close();
+      });
+      final sock =
+          await Socket.connect(InternetAddress.loopbackIPv4, server.port);
+      sock.write('CONNECT plain.test HTTP/1.1\r\nHost: plain.test\r\n\r\n');
+      await sock.flush();
+      try {
+        final (host, port) =
+            await completer.future.timeout(const Duration(seconds: 10));
+        expect(host, 'plain.test');
+        expect(port, 8080);
+      } finally {
+        sock.destroy();
+        await server.close(force: true);
+      }
     });
   });
 

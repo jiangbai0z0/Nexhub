@@ -100,6 +100,65 @@ void main() {
       expect(resolver.cacheSize, 0);
     });
 
+    test('轮转（round-robin）：连续解析从下一个候选开始，N 次内覆盖全部', () async {
+      const hosts = <HostsEntry>[
+        HostsEntry(ip: '198.51.100.11', host: 'rr.test'),
+        HostsEntry(ip: '198.51.100.12', host: 'rr.test'),
+        HostsEntry(ip: '198.51.100.13', host: 'rr.test'),
+      ];
+      const cfg = DnsConfig();
+      final firsts = <String>[];
+      for (var i = 0; i < hosts.length; i++) {
+        final r = await resolver.resolve('rr.test', cfg, hosts);
+        expect(r, hasLength(3), reason: '候选集不因轮转而缩水');
+        firsts.add(r.first.address);
+      }
+      // 三次连续解析的首选各不相同 = 覆盖全部候选（纯 shuffle 做不到保证）。
+      expect(firsts.toSet(), <String>{
+        '198.51.100.11',
+        '198.51.100.12',
+        '198.51.100.13',
+      });
+      // 第 4 次回到起点，形成稳定闭环。
+      final again = await resolver.resolve('rr.test', cfg, hosts);
+      expect(again.first.address, firsts.first);
+    });
+
+    test('轮转游标按 host 隔离，且 host 大小写归一', () async {
+      const hosts = <HostsEntry>[
+        HostsEntry(ip: '198.51.100.21', host: 'a.test'),
+        HostsEntry(ip: '198.51.100.22', host: 'a.test'),
+      ];
+      final r1 = await resolver.resolve('a.test', const DnsConfig(), hosts);
+      expect(r1.first.address, '198.51.100.21');
+      // 另一主机的首次解析不受 a.test 游标影响。
+      final r2 = await resolver.resolve(
+        'b.test',
+        const DnsConfig(),
+        const <HostsEntry>[
+          HostsEntry(ip: '203.0.113.31', host: 'b.test'),
+          HostsEntry(ip: '203.0.113.32', host: 'b.test'),
+        ],
+      );
+      expect(r2.first.address, '203.0.113.31');
+      // 大小写不同但同一主机 → 共享游标（第二次轮到 .22）。
+      final r3 = await resolver.resolve('A.TEST', const DnsConfig(), hosts);
+      expect(r3.first.address, '198.51.100.22');
+    });
+
+    test('clearCache 同时复位轮转游标', () async {
+      const hosts = <HostsEntry>[
+        HostsEntry(ip: '198.51.100.41', host: 'c.test'),
+        HostsEntry(ip: '198.51.100.42', host: 'c.test'),
+      ];
+      final r1 = await resolver.resolve('c.test', const DnsConfig(), hosts);
+      expect(r1.first.address, '198.51.100.41');
+      resolver.clearCache();
+      final r2 = await resolver.resolve('c.test', const DnsConfig(), hosts);
+      expect(r2.first.address, '198.51.100.41',
+          reason: 'clearCache 后游标回到 0，而非停在上一次的位置');
+    });
+
     test('非法 IP 条目被忽略', () async {
       final r = await resolver.resolve(
         'mixed.test',

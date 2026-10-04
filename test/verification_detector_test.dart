@@ -131,6 +131,91 @@ void main() {
       );
     });
 
+    test('Cloudflare 1034 (Edge IP Restricted) 被识别为选路失败', () {
+      // 真机实测原文（hanime1.me 快照 IP 返回体，403 解压后 7451B 的片段）。
+      const body = '<html><head><title>hanime1.me | Edge IP Restricted'
+          '</title></head><body><h1>Error 1034</h1>'
+          '<p>error code: 1034</p>'
+          '<p>The host (hanime1.me) resolved to an IP address that the owner '
+          'of the website does not have access to.</p></body></html>';
+      expect(
+        VerificationDetector.isEdgeIpRestricted(statusCode: 403, body: body),
+        isTrue,
+      );
+      // 同响应仍是「需要处理」的一类（403 语义不变，由调用方选路重试）。
+      expect(
+        VerificationDetector.isVerificationRequired(
+          statusCode: 403,
+          body: body,
+        ),
+        isTrue,
+      );
+    });
+
+    test('1034 标记大小写不敏感', () {
+      expect(
+        VerificationDetector.isEdgeIpRestricted(
+          statusCode: 403,
+          body: '<h1>Edge IP Restricted</h1>',
+        ),
+        isTrue,
+      );
+      expect(
+        VerificationDetector.isEdgeIpRestricted(
+          statusCode: 403,
+          body: '<p>ERROR CODE: 1034</p>',
+        ),
+        isTrue,
+      );
+    });
+
+    test('1034 判定的边界：非 403 / 空 body / 超长 body 都不算', () {
+      const short = '<h1>Error 1034</h1><p>error code: 1034</p>';
+      expect(
+        VerificationDetector.isEdgeIpRestricted(statusCode: 200, body: short),
+        isFalse,
+      );
+      expect(
+        VerificationDetector.isEdgeIpRestricted(statusCode: 503, body: short),
+        isFalse,
+      );
+      expect(
+        VerificationDetector.isEdgeIpRestricted(statusCode: 403, body: ''),
+        isFalse,
+      );
+      expect(
+        VerificationDetector.isEdgeIpRestricted(statusCode: 403, body: null),
+        isFalse,
+      );
+      // 长度闸门：正常大页面即便偶然含同名字样也不当作 1034。
+      final huge = StringBuffer('<h1>Error 1034</h1>')
+        ..write('x' * (65 * 1024));
+      expect(
+        VerificationDetector.isEdgeIpRestricted(
+          statusCode: 403,
+          body: huge.toString(),
+        ),
+        isFalse,
+      );
+    });
+
+    test('普通 403（非 1034）不误判为选路失败', () {
+      expect(
+        VerificationDetector.isEdgeIpRestricted(
+          statusCode: 403,
+          body: '<form>turnstile</form>',
+        ),
+        isFalse,
+      );
+      expect(
+        VerificationDetector.isEdgeIpRestricted(
+          statusCode: 403,
+          body: '<html><body>Attention Required! | Cloudflare</body></html>',
+        ),
+        isFalse,
+      );
+    });
+
     test('valid JSON body + Edge Server header is NOT verification', () {
       // 同一 WAF 放行后返回的正常大 JSON 不能被误判。
       const body =

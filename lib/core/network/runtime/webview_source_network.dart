@@ -306,21 +306,16 @@ class WebviewSourceNetwork {
 
   /// HTTPS 隧道：CONNECT host:port → 解析 IP → 直连 → 双向透传。
   Future<void> _tunnel(HttpRequest request, int defaultPort) async {
-    // dart:io 对 CONNECT 的 uri 解析在不同版本可能落在 authority 或 host/port，
-    // 这里两者都兼容。
-    final uri = request.uri;
-    final authority = uri.authority;
-    final host = uri.host.isNotEmpty
-        ? uri.host
-        : (authority.contains(':')
-            ? authority.substring(0, authority.lastIndexOf(':'))
-            : authority);
-    final port = uri.port != 0
-        ? uri.port
-        : (authority.contains(':')
-            ? int.tryParse(authority.substring(authority.lastIndexOf(':') + 1)) ??
-                defaultPort
-            : defaultPort);
+    // dart:io 对 CONNECT 请求的解析有坑（实测 Dart 3.x）：`request.uri` 把
+    // `hanime1.me:443` 解析成 scheme=`hanime1.me` / path=`443`，而 `uri.host`
+    // 与 `uri.authority` **都是空串**——于是这里算出的 host 为空，最终
+    // `Socket.connect('', 443)` 直接失败（Windows: errno 1225 远程计算机拒绝
+    // 网络连接），WebView 经本地代理的所有 HTTPS 流量全灭。
+    // 唯一可靠的来源是 `Host` 头（CONNECT 请求必带完整 `host:port`），其次才是
+    // `requestedUri`/`uri` 的兼容分支。
+    final target = _parseConnectTarget(request, defaultPort);
+    final host = target.$1;
+    final port = target.$2;
     try {
       final addresses = await _resolveAddresses(host);
       final targetSocket =
@@ -342,6 +337,94 @@ class WebviewSourceNetwork {
         // 已 detached 或关闭，忽略。
       }
     }
+  }
+
+  /// 解析 CONNECT 目标为 `(host, port)`（纯函数，供单测直接覆盖）。
+  ///
+  /// CONNECT 的 request-line 与 `Host` 头在 dart:io 下会被拆到**不同字段**，
+  /// 因此这里独立收集 host 与 port（各自取最可靠来源后拼装），而不是指望
+  /// 单一字段同时给出两者。
+  @visibleForTesting
+  (String, int) debugParseConnectTarget(HttpRequest request, int defaultPort) =>
+      _parseConnectTarget(request, defaultPort);
+
+  (String, int) _parseConnectTarget(HttpRequest request, int defaultPort) {
+    var host = '';
+    int? port;
+
+    // host 与 port 各自独立收集（CONNECT 下不存在一个能同时给出两者的字段），
+    // 先到先得：靠前的来源更可信。
+    void takePair((String, int?) raw) {
+      if (host.isEmpty && raw.$1.isNotEmpty) host = raw.$1;
+      if (port == null && raw.$2 != null) port = raw.$2;
+    }
+
+    // ① Host 头：CONNECT 语义上必带目标权威，host 部分永远最可信（实测 dart:io
+    //    下也是唯一同时可靠的通道——uri.host / uri.port / uri.authority 全空）。
+    takePair(_splitHostPort(request.headers.value(HttpHeaders.hostHeader)));
+
+    // ② 请求行。dart:io 的 CONNECT 解析是坏的（见 debugParseConnectTarget 上的
+    //    实测记录）：`CONNECT host:port` → scheme=host、path=port；`CONNECT host`
+    //    → scheme 空、path=host。所以这两处都按「可能是 host、也可能是 port」
+    //    双向试探，由 _splitHostPort 的形状判定决定各自归属。
+    final line = request.uri;
+    if (line.scheme != 'http' && line.scheme != 'https') {
+      takePair(_splitHostPort(line.scheme));
+      takePair(_splitHostPort(line.authority));
+    }
+    // path：`443`（仅端口）或 `host:port`；去掉前导斜杠后仍含 `/` 的路径段不是
+    // 目标权威，直接跳过。
+    final path = line.path.startsWith('/') ? line.path.substring(1) : line.path;
+    if (path.isNotEmpty && !path.contains('/')) {
+      takePair(_splitHostPort(path));
+    }
+
+    // ③ requestedUri：**CONNECT 下一律不采信**。实测 `CONNECT plain.test`（请求行
+    //    不带端口）时 dart:io 会合成 `http://plain.testplain.test` 并把 port 报成
+    //    80 —— 主机名被拼了两遍、端口是凭空出现的。采信它会把隧道指向 80 端口。
+    //    隧道目标的权威信息在请求行 + Host 头里已经完整，无需第三来源。
+
+    return (host, port ?? defaultPort);
+  }
+
+  @visibleForTesting
+  static (String, int) debugSplitHostPort(String? raw, int defaultPort) {
+    final r = _splitHostPort(raw);
+    return (r.$1, r.$2 ?? defaultPort);
+  }
+
+  /// 把 `host[:port]`（或纯端口串）拆成 `(host, port?)`；port 为 null 表示
+  /// 原文未给出端口（调用方按来源优先级合并时用 null 表示「未指定」）。
+  ///
+  /// 兼容 IPv6 字面量 `[::1]:443`。整段是数字（`443`）时视作「无 host、只有
+  /// 端口」，返回 `('', 443)`，让调用方继续从别的来源取 host。
+  static (String, int?) _splitHostPort(String? raw) {
+    final s = (raw ?? '').trim();
+    if (s.isEmpty) return ('', null);
+    // IPv6 字面量。
+    if (s.startsWith('[')) {
+      final end = s.indexOf(']');
+      if (end > 0) {
+        final h = s.substring(1, end);
+        final rest = s.substring(end + 1);
+        return (h, rest.startsWith(':') ? _portOrNull(rest.substring(1)) : null);
+      }
+    }
+    final colon = s.lastIndexOf(':');
+    if (colon < 0) {
+      // 无端口：可能是 host，也可能只剩一个端口号（dart:io 只留下 `443`）。
+      final asPort = _portOrNull(s);
+      if (asPort != null) return ('', asPort);
+      return (s, null);
+    }
+    return (s.substring(0, colon).trim(), _portOrNull(s.substring(colon + 1)));
+  }
+
+  /// 解析端口号；非法或越界返回 null（`null` 语义 = 未指定，不是 0）。
+  static int? _portOrNull(String raw) {
+    final v = int.tryParse(raw.trim());
+    if (v == null || v <= 0 || v > 65535) return null;
+    return v;
   }
 
   /// 明文 HTTP 代理：重写请求行到解析后的 IP，双向透传原始字节。

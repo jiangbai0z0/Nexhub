@@ -128,6 +128,56 @@ void main() {
     }
   }, timeout: const Timeout(Duration(seconds: 30)));
 
+  test('CF 1034（Edge IP Restricted）：按选路失败重试，换到好 IP 后放行', () async {
+    // 真机现象：快照 IP 中 3/5 返回 403 + error 1034（TCP 却是通的），旧逻辑
+    // 因 body 非空判定 hard403=false 直接上抛 → 用户看到验证页。1034 是按 IP
+    // 授权的选路失败，退避重试让 DnsResolver 轮转到下一个候选即可自愈。
+    const restricted = '<html><head><title>hanime1.me | Edge IP Restricted'
+        '</title></head><body><h1>Error 1034</h1>'
+        '<p>error code: 1034</p></body></html>';
+    final (url, close) = await startServer(const [
+      (status: 403, body: restricted),
+      (status: 403, body: restricted),
+      (status: 200, body: '<html><body>recovered</body></html>'),
+    ]);
+    try {
+      final sw = Stopwatch()..start();
+      final body = await HttpFetcher.instance.getHtml(url);
+      sw.stop();
+      expect(body, contains('recovered'));
+      // 两次递增退避（1500+ / 3000+）至少 ~4s：证明真的走了重试而非直通。
+      expect(sw.elapsed.inMilliseconds, greaterThan(3500));
+      expect(sw.elapsed.inMilliseconds, lessThan(15000));
+      // 重试成功应清掉验证冷却，同站紧随请求不被 20s 冷却拖住。
+      final sw2 = Stopwatch()..start();
+      await HttpFetcher.instance.getHtml(url);
+      sw2.stop();
+      expect(sw2.elapsed.inMilliseconds, lessThan(3000));
+    } finally {
+      await close();
+    }
+  }, timeout: const Timeout(Duration(seconds: 60)));
+
+  test('CF 1034 持续失败：重试耗尽后仍抛验证异常（保留用户可介入路径）', () async {
+    const restricted = '<html><body><h1>Error 1034</h1>'
+        '<p>error code: 1034</p></body></html>';
+    final (url, close) = await startServer(
+      List.filled(6, const (status: 403, body: restricted)),
+    );
+    try {
+      await expectLater(
+        HttpFetcher.instance.getHtml(url),
+        throwsA(
+          isA<VerificationRequiredException>()
+              .having((e) => e.statusCode, 'statusCode', 403)
+              .having((e) => e.body, 'body', contains('1034')),
+        ),
+      );
+    } finally {
+      await close();
+    }
+  }, timeout: const Timeout(Duration(seconds: 90)));
+
   test('401：不重试，立即抛验证异常', () async {
     final (url, close) = await startServer(const [
       (status: 401, body: ''),

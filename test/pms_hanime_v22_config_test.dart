@@ -15,9 +15,9 @@ void main() {
     source = PluginConfig.fromJson(map);
   });
 
-  group('pms_hanime v22→v27 配置消费', () {
-    test('版本号与基础块保持 v21 兼容（v27 = 去 bot UA + favList 两跳 meta）', () {
-      expect(source.version, 27);
+  group('pms_hanime v22→v28 配置消费', () {
+    test('版本号与基础块保持 v21 兼容（v28 = 权威 DoH IP + 剔死域）', () {
+      expect(source.version, 28);
       expect(source.id, 'pms_hanime');
       expect(source.type, SourceType.animeSource);
       expect(source.routes.containsKey('latest'), isTrue);
@@ -245,6 +245,56 @@ void main() {
       // 引擎入口 fallback 契约（_runScriptWithRaw: entry = override.function ?? apiName）
       expect(script, contains('function favList('));
       expect(script, contains('function favListParse('));
+    });
+
+    test('v28 hosts 换权威实测 IP：剔快照/死域，与 DNS 实解一致', () {
+      final hosts = source.network?.hosts ?? const <dynamic>[];
+      // 曾经照抄参考库 HDns.kt 的 CF 快照 IP，其中 3/5 返回 CF error 1034
+      // （Edge IP Restricted，该边缘 IP 未获本站授权），TCP 却通、连接层判定
+      // 成功 → 应用层 403 弹验证。全部换成 doh.pub 权威 A 记录实测可用的 IP。
+      final ips = hosts.map((h) => '${h.ip}').toSet();
+      expect(ips, <String>{
+        '104.26.9.104',
+        '172.67.74.156',
+        '104.26.8.104', // hanime1.me 权威三值，实测 6/6 全 200
+        '104.21.42.221',
+        '172.67.167.30', // hanime1.com 权威两值，实测 301 → hanime1.me
+      });
+      expect(hosts, hasLength(5), reason: '3 (me) + 2 (com)');
+      // 坏快照 IP 一条都不能留。
+      for (final bad in const [
+        '172.64.229.154',
+        '162.159.0.1',
+        '108.162.192.1',
+        '172.64.33.1',
+        '104.19.0.1',
+      ]) {
+        expect(ips.contains(bad), isFalse,
+            reason: 'CF 快照 IP $bad 实测 403/1034，必须剔除');
+      }
+      // IPv6 快照同上（实测 403|5507），且站点走 v4 足够。
+      expect(hosts.every((h) => !'${h.ip}'.contains(':')), isTrue,
+          reason: 'IPv6 快照全部实测不可用，不应保留');
+      expect(hosts.every((h) => '${h.enabled}' == 'true'), isTrue);
+      final hostNames = hosts.map((h) => '${h.host}').toSet();
+      expect(hostNames, <String>{'hanime1.me', 'hanime1.com'});
+    });
+
+    test('v28 剔除死域 hanimeone.me：已从 mirrors/hosts/cookieDomains 消失', () {
+      final raw = File('plugins/builtin/pms_hanime.json').readAsStringSync();
+      // 对照实验定性：hanimeone.me 的权威 A 记录（172.67.215.214 /
+      // 104.21.43.14）以自身 SNI 访问全部 000 不可达；同两个 IP 用作
+      // hanime1.me 的 --resolve 目标却双双 200 → CF 已摘除该域映射，是死域。
+      expect(raw.contains('hanimeone.me'), isFalse,
+          reason: '死域残留只会带来一次必然失败的 DNS/连接尝试');
+      final mirrors = source.site.mirrors;
+      expect(mirrors.map((m) => m.domain), <String>['hanime1.me', 'hanime1.com']);
+      expect(source.network?.cookieDomains, <String>[
+        'hanime1.me',
+        '.hanime1.me',
+        'hanime1.com',
+        '.hanime1.com',
+      ]);
     });
   });
 }
