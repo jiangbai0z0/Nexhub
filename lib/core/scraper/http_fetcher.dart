@@ -172,11 +172,18 @@ class HttpFetcher {
   /// [profile] 为 null 表示默认档案（运行时用全局有效档案）；否则用该档案。
   /// 客户端构建统一走 [NetworkClientBuilder]，与全局 HttpOverrides 同一路径。
   Dio _createDio(EffectiveNetworkProfile? profile) {
-    final dio = Dio();
-    // 对齐旧版（AI 修改前可正常解析的版本）：补全浏览器标准请求头。
-    // 缺少 Accept / Accept-Language 头时，大量国内站（小说/动漫/漫画）会直接返回 400 空响应。
-    dio.options.connectTimeout = const Duration(seconds: 15);
-    dio.options.receiveTimeout = const Duration(seconds: 30);
+    final dio = Dio()
+      // 头名保留原始大小写。**不要去掉**：Dart HttpClient 默认把所有请求头
+      // 名小写化（`user-agent`、`host`...），而部分 WAF（实测 hanime1.me 的
+      // Cloudflare）把「头名全小写」当作机器人指纹——同一 IP、同一头值，仅
+      // 头名小写就稳定 403（curl 发正确大小写的同名头则 200，10+ 次对照
+      // 零例外）。preserveHeaderCase 经 BaseOptions → Options.compose 透传到
+      // 每个请求（dio ≥5.2），由 IOHttpClientAdapter 原生支持。
+      ..options.preserveHeaderCase = true
+      // 对齐旧版（AI 修改前可正常解析的版本）：补全浏览器标准请求头。
+      // 缺少 Accept / Accept-Language 头时，大量国内站（小说/动漫/漫画）会直接返回 400 空响应。
+      ..options.connectTimeout = const Duration(seconds: 15)
+      ..options.receiveTimeout = const Duration(seconds: 30);
     dio.options.headers.addAll({
       'User-Agent': _defaultUa(),
       'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -596,6 +603,14 @@ class HttpFetcher {
       'Sec-Fetch-User': '?1',
       'Upgrade-Insecure-Requests': '1',
       'Connection': 'keep-alive',
+      // 显式 Host 头（保留大写形态）：SDK 自动推导的 host 头名恒为小写——
+      // _updateHostHeader 走 _set 私有路径，不记录 _originalHeaderNames，
+      // preserveHeaderCase 管不到它。而头名大小写正是部分 WAF（hanime1.me
+      // Cloudflare）的机器人判据之一。显式以 'Host' 为键走通用 set 路径
+      // （'host' != 'Host'，字符串比较区分大小写），才会记录原始形态。
+      // RAW 抓包已验证该形态可行。
+      if (host != null && host.isNotEmpty)
+        'Host': _hostHeaderValue(Uri.parse(url!)),
       if (referer != null) 'Referer': referer,
       ...?extra,
     };
@@ -604,6 +619,16 @@ class HttpFetcher {
     final cookie = _cookieHeaderFor(url);
     if (cookie != null) merged['Cookie'] = cookie;
     return merged;
+  }
+
+  /// Host 头值：非默认端口必须带 `:port`（与 SDK `_updateHostHeader` 语义一致：
+  /// 默认端口省略，非默认端口 `host:port`）。
+  static String _hostHeaderValue(Uri uri) {
+    final host = uri.host;
+    final port = uri.port;
+    final bool defaultPort =
+        !uri.hasPort || port == (uri.scheme == 'https' ? 443 : 80);
+    return defaultPort ? host : '$host:$port';
   }
 
   /// 取与 [url] 同域（含父域→子域标准作用域）的已存 Cookie，拼成 `Cookie` 头值。
