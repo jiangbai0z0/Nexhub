@@ -55,6 +55,7 @@ Future<void> openSheet(
   WidgetTester tester, {
   required List<FilterGroupConfig> groups,
   DynamicOnlineFilter? initial,
+  String? defaultRoute,
   required ValueChanged<DynamicOnlineFilter> onApply,
 }) async {
   await tester.pumpWidget(appHost(
@@ -64,6 +65,7 @@ Future<void> openSheet(
           ctx,
           groups: groups,
           initial: initial ?? const DynamicOnlineFilter(),
+          defaultRoute: defaultRoute,
           onApply: onApply,
         ),
         child: const Text('OPEN_SHEET'),
@@ -71,6 +73,14 @@ Future<void> openSheet(
     ),
   ));
   await tester.tap(find.text('OPEN_SHEET'));
+  await tester.pumpAndSettle();
+}
+
+/// 点在面板里可见的文本（分组标题 / 选项 / 应用），带滚动兜底。
+Future<void> tapVisible(WidgetTester tester, String label) async {
+  await tester.ensureVisible(find.text(label));
+  await tester.pumpAndSettle();
+  await tester.tap(find.text(label));
   await tester.pumpAndSettle();
 }
 
@@ -161,6 +171,110 @@ void main() {
     expect(applied!.selections.length, 1);
     expect(applied!.selections.first.groupId, 'tag');
     expect(applied!.selections.first.value, 'v3');
+  });
+
+  testWidgets('动态筛选：分组未声明 route 时回落到源声明的 defaultRoute',
+      (WidgetTester tester) async {
+    DynamicOnlineFilter? applied;
+    await openSheet(
+      tester,
+      groups: <FilterGroupConfig>[group('genre', '类型', 1, multiSelect: false)],
+      defaultRoute: 'search',
+      onApply: (f) => applied = f,
+    );
+
+    await tester.tap(find.text('选项0'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('应用'));
+    await tester.pumpAndSettle();
+
+    // 关键：没有逐组声明 route 的分组，必须用源声明的 filters.route，
+    // 否则被硬编码 category 顶掉，筛选参数在 category 路由里无占位符 → 全失效。
+    expect(applied, isNotNull);
+    expect(applied!.route, 'search');
+    expect(applied!.toVars()['__route'], 'search');
+  });
+
+  testWidgets('动态筛选：不传 defaultRoute 时回落 category（旧行为不变）',
+      (WidgetTester tester) async {
+    DynamicOnlineFilter? applied;
+    await openSheet(
+      tester,
+      groups: <FilterGroupConfig>[group('genre', '类型', 1, multiSelect: false)],
+      onApply: (f) => applied = f,
+    );
+
+    await tester.tap(find.text('选项0'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('应用'));
+    await tester.pumpAndSettle();
+
+    expect(applied!.route, 'category');
+  });
+
+  testWidgets('动态筛选：defaultRoute 消除跨路由互斥误清空已选项',
+      (WidgetTester tester) async {
+    // 一组自声明 route=search，一组未声明。未声明那组的有效路由若不回落到
+    // 源声明的 search，就会与已选组跨路由互斥 → 用户先选 A 再选 B，A 被清空。
+    const groups = <FilterGroupConfig>[
+      FilterGroupConfig(
+        id: 'tags',
+        title: '题材',
+        route: 'search',
+        param: 'tags',
+        options: <FilterOptionConfig>[
+          FilterOptionConfig(value: '無碼', label: '无码'),
+        ],
+      ),
+      FilterGroupConfig(
+        id: 'sort',
+        title: '排序',
+        param: 'sort',
+        options: <FilterOptionConfig>[
+          FilterOptionConfig(value: '最新上市', label: '最新上市'),
+        ],
+      ),
+    ];
+
+    DynamicOnlineFilter? applied;
+    await openSheet(
+      tester,
+      groups: groups,
+      defaultRoute: 'search',
+      onApply: (f) => applied = f,
+    );
+    await tester.tap(find.text('无码'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('最新上市'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('应用'));
+    await tester.pumpAndSettle();
+
+    // 两组同路由 → 两项都保留。
+    expect(applied!.route, 'search');
+    expect(applied!.selections.length, 2);
+    expect(
+      applied!.selections.map((s) => s.value).toSet(),
+      <String>{'無碼', '最新上市'},
+    );
+
+    // 对照：不传 defaultRoute（旧行为）→ 第二组算出 category，跨路由互斥清空第一组。
+    DynamicOnlineFilter? legacy;
+    await openSheet(
+      tester,
+      groups: groups,
+      onApply: (f) => legacy = f,
+    );
+    await tester.tap(find.text('无码'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('最新上市'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('应用'));
+    await tester.pumpAndSettle();
+
+    expect(legacy!.selections.length, 1);
+    expect(legacy!.selections.single.value, '最新上市');
+    expect(legacy!.route, 'category');
   });
 
   testWidgets('源编辑页：默认全折叠，展开才出现编辑框，折叠再展开编辑不丢',

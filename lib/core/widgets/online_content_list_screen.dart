@@ -1058,6 +1058,10 @@ class _OnlineContentListScreenState extends State<OnlineContentListScreen>
   ///
   /// 筛选分组由源驱动（[ResolveFilters] → [MediaApiService.resolveFilterGroups]），
   /// 修复旧版写死年份/地区/排序/状态。无分组时静默返回（按钮本就不显示）。
+  ///
+  /// 同时把源声明的 `filters.route` 作为缺省路由交给 Sheet：分组自身没写
+  /// route 时必须回落到源声明的这条路由（它才是筛选 URL 模板真正对应的
+  /// 路由），否则会被硬编码的 `category` 顶掉、筛选参数无处可放而全部失效。
   Future<void> _showFilter(_CategoryTabState state) async {
     final source = _source;
     if (source == null) return;
@@ -1067,6 +1071,7 @@ class _OnlineContentListScreenState extends State<OnlineContentListScreen>
       context,
       groups: groups,
       initial: state.filter,
+      defaultRoute: source.filters?.route,
       onApply: (filter) {
         setState(() {
           state.filter = filter;

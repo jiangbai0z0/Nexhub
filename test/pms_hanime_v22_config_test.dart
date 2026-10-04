@@ -16,8 +16,8 @@ void main() {
   });
 
   group('pms_hanime v22→v28 配置消费', () {
-    test('版本号与基础块保持 v21 兼容（v28 = 权威 DoH IP + 剔死域）', () {
-      expect(source.version, 28);
+    test('版本号与基础块保持 v21 兼容（v29 = 全量值域 + 筛选路由声明）', () {
+      expect(source.version, 29);
       expect(source.id, 'pms_hanime');
       expect(source.type, SourceType.animeSource);
       expect(source.routes.containsKey('latest'), isTrue);
@@ -123,10 +123,12 @@ void main() {
       expect(hosts.where((h) => '${h.host}'.contains('javchu')), isEmpty);
     });
 
-    test('v24 筛选对齐参考库：genre 9 值无新番預告，search 路由带 tags[] 数组占位', () {
+    test('v29 筛选对齐站点表单：genre 10 值含新番預告，search 路由带数组占位', () {
       final raw = File('plugins/builtin/pms_hanime.json').readAsStringSync();
-      expect(raw.contains('新番預告'), isFalse,
-          reason: '参考库 genre.json 无「新番預告」，站点搜索不接受该值');
+      // 站点搜索表单 genre-option 实测 11 项（全部 + 10 真值），新番預告在列。
+      // v24 曾依参考库 genre.json 判断其不存在而剔除，v29 以站点一手取证反转。
+      expect(raw.contains('新番預告'), isTrue,
+          reason: '站点 genre-option data-value 含「新番預告」（实测 19 卡）');
       expect(source.routes['search']!.url, contains('tags[]={tags}'),
           reason: 'v25 起站点 tags 走 tags[]= 重复参数（数组语义），逗号串会被当成一个不存在的 tag');
       expect(raw.contains('&tags={tags}'), isFalse,
@@ -134,23 +136,66 @@ void main() {
       final groups = source.filters?.groups ?? const <FilterGroupConfig>[];
       final genre = groups.firstWhere((g) => g.id == 'genre');
       final values = genre.options.map((o) => o.value).toSet();
-      expect(values.length, 9);
+      expect(values.length, 10);
       expect(values, containsAll(<String>[
         '裏番', '泡麵番', 'Motion Anime', '3DCG', '2.5D',
-        '2D動畫', 'AI生成', 'MMD', 'Cosplay',
+        '2D動畫', 'AI生成', 'MMD', 'Cosplay', '新番預告',
       ]));
+      // 站点 10 个 genre 值全部实测有效（裏番 41 / 泡麵番 41 / 新番預告 19 /
+      // 其余各 59 卡，无零结果）。分类 Tab 与 genre 组同值集。
+      final catValues =
+          source.category.categoryEntries.map((e) => e['id']).toSet();
+      expect(catValues, values, reason: '分类 Tab 同步到 10 值');
     });
 
-    test('v25 tags 面：7 组 235 值全 multiSelect，param=tags，value 繁体 label 简体', () {
+    test('v29 新增 date/duration 两组：值用站点繁体原文并直通路由占位符', () {
+      final groups = source.filters?.groups ?? const <FilterGroupConfig>[];
+      final byId = {for (final g in groups) g.id: g};
+      final date = byId['date']!;
+      expect(date.param, 'date');
+      expect(date.multiSelect, isFalse);
+      expect(date.options.map((o) => o.value).toList(), <String>[
+        '過去 24 小時', '過去 2 天', '過去 1 週',
+        '過去 1 個月', '過去 3 個月', '過去 1 年',
+      ], reason: '站点 hentai-date-options-wrapper 六值（空值「全部」不列）');
+      final duration = byId['duration']!;
+      expect(duration.param, 'duration');
+      expect(duration.multiSelect, isFalse);
+      expect(duration.options.map((o) => o.value).toList(), <String>[
+        '1 分鐘 +', '5 分鐘 +', '10 分鐘 +', '20 分鐘 +',
+        '30 分鐘 +', '60 分鐘 +', '0 - 10 分鐘', '0 - 20 分鐘',
+      ], reason: '站点 hentai-duration-options-wrapper 八值（空值「全部」不列）');
+      // 值必须进入 search 路由，否则选了也带不上（引擎按 {date}/{duration}
+      // 替换；中文值走 encodeComponent）。
+      final url = source.routes['search']!.url;
+      expect(url, contains('date={date}'));
+      expect(url, contains('duration={duration}'));
+    });
+
+    test('v29 全部筛选分组声明 route=search（消除跨路由互斥清空）', () {
+      final groups = source.filters?.groups ?? const <FilterGroupConfig>[];
+      expect(groups.length, 12,
+          reason: 'genre/sort/date/duration/broad + 7 tags 组');
+      for (final g in groups) {
+        expect(g.route, 'search',
+            reason: '分组 ${g.id} 未声明 route 时回落硬编码 category → '
+                '与已声明 search 的分组跨路由互斥、互相清空已选项，'
+                '且 __route=category 切到 /search?genre={category} '
+                '模板后 genre/sort/tags/broad 占位符全不存在 → 筛选整体失效');
+      }
+      expect(source.filters!.route, 'search');
+    });
+
+    test('v29 tags 面：7 组 240 值全 multiSelect，param=tags，value 繁体 label 简体', () {
       final groups = source.filters?.groups ?? const <FilterGroupConfig>[];
       final expected = <String, int>{
         'video_attributes': 9,
         'character_relationships': 9,
         'characteristics': 47,
-        'appearance_and_figure': 47,
-        'story_location': 24,
-        'story_plot': 45,
-        'sex_positions': 54,
+        'appearance_and_figure': 48,
+        'story_location': 25,
+        'story_plot': 46,
+        'sex_positions': 56,
       };
       final titles = <String, String>{
         'video_attributes': '影片属性',
@@ -167,7 +212,7 @@ void main() {
           (x) => x.id == id,
           orElse: () => throw StateError('缺 tags 组 $id'),
         );
-        expect(g.options.length, count, reason: '$id 选项数对齐参考库 tags.json');
+        expect(g.options.length, count, reason: '$id 选项数对齐站点 240 checkbox');
         expect(g.multiSelect, isTrue, reason: '$id 需多选');
         expect(g.param, 'tags', reason: '$id 共用 tags 占位符');
         expect(g.title, titles[id], reason: '$id 标题对齐参考库 zh-rCN strings');
@@ -182,8 +227,15 @@ void main() {
         }
         total += g.options.length;
       });
-      expect(total, 235, reason: '7 组合计 235 值 = 参考库 tags.json 全量');
-      expect(groups.length, 10, reason: 'genre/sort/broad + 7 tags 组');
+      expect(total, 240, reason: '7 组合计 240 值 = 站点 tags modal 全量');
+      // v29 补的 5 个低产 tag（站点实测：黑屌 34 / 哭泣 40 / 體育倉庫 12 卡）。
+      final allTags = <String>{
+        for (final id in expected.keys)
+          ...groups.firstWhere((g) => g.id == id).options.map((o) => o.value),
+      };
+      expect(allTags.containsAll(<String>[
+        '黑屌', '體育倉庫', '哭泣', '玩乳頭', '側面位',
+      ]), isTrue, reason: 'v29 逐组差集补齐的 5 个缺失 tag');
     });
 
     test('v24 homeSections：参考库 12 版块参数映射逐一落地', () {

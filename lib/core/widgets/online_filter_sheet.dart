@@ -523,10 +523,18 @@ class DynamicOnlineFilter {
 /// [groups] 为源声明或兜底生成的筛选分组；[initial] 为初始条件；
 /// [onApply] 为用户点击「应用」后的回调。当 [groups] 为空时不应调用本函数
 /// （调用方应改为不显示筛选按钮）。
+///
+/// [defaultRoute] 为「分组未自声明 route」时的缺省路由，调用方应传源声明的
+/// `filters.route`。旧版这里硬编码回落 `'category'`，导致声明了非 category
+/// 搜索路由的源（如筛选走 `search` 的源）一旦未逐组声明 route，选中项就被
+/// 写成 `__route='category'`，切到另一套 url 模板后筛选参数占位符根本不存在
+/// → 全部筛选失效，且与已声明 route 的分组跨路由互斥、互相清空已选。
+/// 缺省仍为 `null` 时行为与旧版一致（`category`），既有源完全不受影响。
 Future<void> showDynamicFilterSheet(
   BuildContext context, {
   required List<FilterGroupConfig> groups,
   DynamicOnlineFilter initial = const DynamicOnlineFilter(),
+  String? defaultRoute,
   required ValueChanged<DynamicOnlineFilter> onApply,
 }) {
   return showModalBottomSheet<void>(
@@ -541,6 +549,7 @@ Future<void> showDynamicFilterSheet(
     builder: (ctx) => _DynamicFilterSheet(
       groups: groups,
       initial: initial,
+      defaultRoute: defaultRoute,
       onApply: onApply,
     ),
   );
@@ -551,11 +560,16 @@ class _DynamicFilterSheet extends StatefulWidget {
     required this.groups,
     required this.initial,
     required this.onApply,
+    this.defaultRoute,
   });
 
   final List<FilterGroupConfig> groups;
   final DynamicOnlineFilter initial;
   final ValueChanged<DynamicOnlineFilter> onApply;
+
+  /// 分组未自声明 route 时的缺省路由（通常来自源声明的 `filters.route`）。
+  /// 为 null 时沿用旧行为 `category`。
+  final String? defaultRoute;
 
   @override
   State<_DynamicFilterSheet> createState() => _DynamicFilterSheetState();
@@ -602,9 +616,17 @@ class _DynamicFilterSheetState extends State<_DynamicFilterSheet> {
     });
   }
 
-  /// 分组的有效路由（分组自声明优先，缺省回退 `category`）。
-  String _routeOf(FilterGroupConfig g) =>
-      (g.route != null && g.route!.isNotEmpty) ? g.route! : 'category';
+  /// 分组的有效路由：分组自声明优先，其次用调用方给出的源级缺省路由
+  /// （[defaultRoute]），最后才回退 `category`。
+  ///
+  /// 中间那一层是关键——源声明的 `filters.route` 才是这套筛选 URL 模板真正
+  /// 对应的路由；只用分组自声明会让「没逐组写 route」的源整组筛选失效。
+  String _routeOf(FilterGroupConfig g) {
+    if (g.route != null && g.route!.isNotEmpty) return g.route!;
+    final fallback = widget.defaultRoute;
+    if (fallback != null && fallback.isNotEmpty) return fallback;
+    return 'category';
+  }
 
   bool _isSelected(FilterGroupConfig g, String value) =>
       _selected.any((s) => s.groupId == g.id && s.value == value);

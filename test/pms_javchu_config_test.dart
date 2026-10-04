@@ -112,60 +112,106 @@ void main() {
       expect(ov['favoritesAdd']?.type, 'script');
     });
 
-    test('v3 筛选对齐 AV 站：genre 6 值 + tags 面 + tags[] 数组占位', () {
+    test('v7 筛选全走 tags 面：死 AV genre 值清零 + 5 组同路由声明', () {
       final raw = File('plugins/builtin/pms_javchu.json').readAsStringSync();
-      // javchu 不再复用 hanime 的里番向 genre 值。
-      for (final banned in const ['裏番', '泡麵番', 'Motion Anime', '新番預告']) {
-        expect(raw.contains(banned), isFalse,
-            reason: 'AV 站无此类型：$banned');
+      // v7 拔掉 6 个死 AV genre 值：那是 javchu.com 自站的值，搬到 hanime1.me
+      // 后实测 11639~11670B 空结果页（唯一卡 0）——站点上不存在这些值。
+      for (final dead in const [
+        '日本AV', '素人業餘', '高清無碼', 'AI解碼', '國產AV', '國產素人',
+      ]) {
+        expect(raw.contains(dead), isFalse, reason: '死 AV 分类值已清：$dead');
       }
-      expect(source.version, 5);
+      // javchu 也不再复用 hanime 的里番向 genre 值（走 tag 面）。
+      for (final banned in const ['裏番', '泡麵番', 'Motion Anime', '新番預告']) {
+        expect(raw.contains(banned), isFalse, reason: 'AV 源无此类型：$banned');
+      }
+      expect(source.version, 7);
+
+      // 分类路由必须把 tag 值送进 tags[] 槽位。v6 误用
+      // /search?genre={category}&page={page} —— tag 值塞 genre 槽位恒 0 卡。
+      expect(source.routes['category']!.url, contains('tags[]={category}'),
+          reason: 'v7 分类路由改 tags[] 槽位（实测 200 / 59 卡）');
+      expect(source.routes['category']!.url, isNot(contains('genre=')),
+          reason: 'genre 槽位不再承接 tag 值');
       expect(source.routes['search']!.url, contains('tags[]={tags}'),
-          reason: 'v3 起与 hanime 同构：tags[] 重复参数数组语义');
+          reason: '与 hanime 同构：tags[] 重复参数数组语义');
       expect(raw.contains('&tags={tags}'), isFalse);
+
       final groups = source.filters?.groups ?? const <FilterGroupConfig>[];
       final byId = {for (final g in groups) g.id: g};
-      final genreValues =
-          byId['genre']!.options.map((o) => o.value).toSet();
-      expect(genreValues, <String>{
-        '日本AV', '素人業餘', '高清無碼', 'AI解碼', '國產AV', '國產素人',
-      });
+      // 原 genre 组整体移除（无任何活值可承载）。
+      expect(byId.containsKey('genre'), isFalse);
       final tagGroup = byId['tags']!;
       expect(tagGroup.multiSelect, isTrue, reason: 'tags 面支持多选');
       final tagValues = tagGroup.options.map((o) => o.value).toSet();
-      expect(tagValues, <String>{'中文字幕'});
-      final categoryEntries = source.category.categoryEntries;
-      final catValues = categoryEntries
+      expect(tagValues, <String>{
+        '無碼', '人妻', '風俗娘', '痴女', '痴漢', '調教', '性奴隸', '巨乳',
+        '中文字幕',
+      }, reason: '站点实测有结果的 AV 向 tag（各 59 卡）');
+      // 分类 Tab 与 tags 组同值集（分类就是 tags 面的入口）。
+      final catValues = source.category.categoryEntries
           .map((e) => e['id'])
           .toSet();
-      expect(catValues, genreValues, reason: '分类与筛选 genre 同值集');
+      expect(catValues, tagValues.difference(<String>{'中文字幕'}),
+          reason: '8 个分类 = tags 组去掉中文字幕');
     });
 
-    test('v2 homeSections：AV 站 12 版块参数映射逐一落地', () {
+    test('v7 筛选分组全部声明 route=search（消除跨路由互斥清空）', () {
+      final groups = source.filters?.groups ?? const <FilterGroupConfig>[];
+      expect(groups.length, 5, reason: 'tags/sort/date/duration/broad');
+      for (final g in groups) {
+        expect(g.route, 'search',
+            reason: '分组 ${g.id} 必须声明 route，否则回落 category 与 tags 组'
+                '跨路由互斥、互相清空已选项');
+      }
+      expect(source.filters!.route, 'search');
+      final byId = {for (final g in groups) g.id: g};
+      expect(byId['sort']!.options.map((o) => o.value).toSet().length, 9,
+          reason: '站点排序 9 值');
+      expect(byId['date']!.options.length, 6, reason: 'v7 新增日期面');
+      expect(byId['duration']!.options.length, 8, reason: 'v7 新增时长面');
+      expect(byId['broad']!.options.length, 2);
+      // date/duration 值用站点繁体原文（实测 date=過去 24 小時 → 8 卡真过滤）。
+      expect(byId['date']!.options.map((o) => o.value), contains('過去 24 小時'));
+      expect(
+          byId['duration']!.options.map((o) => o.value), contains('10 分鐘 +'));
+    });
+
+    test('v7 homeSections：12 版块全部改用站点真实 tag/排序参数', () {
       final sections = source.homeSections;
-      expect(sections.length, 12, reason: '参考库 buildCategoryList AV 分支 12 版块');
+      expect(sections.length, 12, reason: 'AV 分区 12 版块');
       expect(sections.every((s) => s.route == 'search'), isTrue);
       HomeSectionConfig sectionOf(String id) =>
           sections.firstWhere((x) => x.id == id);
       Map<String, Object> paramsOf(String id) => sectionOf(id).params;
 
-      expect(sectionOf('latest-av').title, '最新AV');
-      expect(paramsOf('latest-av')['genre'], '日本AV');
+      // 8 个 tag 版块逐一落地（tag 值实测各 59 卡）。
+      const tagSections = <String, String>{
+        'nomask': '無碼',
+        'hitozuma': '人妻',
+        'fuzoku': '風俗娘',
+        'chijo': '痴女',
+        'chikan': '痴漢',
+        'kyoiku': '調教',
+        'dorei': '性奴隸',
+        'kyonyu': '巨乳',
+      };
+      for (final e in tagSections.entries) {
+        expect(paramsOf(e.key)['tags'], e.value, reason: '版块 ${e.key}');
+        expect(paramsOf(e.key)['sort'], '最新上傳');
+        expect(paramsOf(e.key).containsKey('genre'), isFalse,
+            reason: 'v7 版块不再走 genre 槽位');
+      }
+      expect(paramsOf('chinese-subtitle')['tags'], '中文字幕');
+      expect(paramsOf('chinese-subtitle')['sort'], '最新上傳');
       expect(paramsOf('latest-release')['sort'], '最新上市');
       expect(paramsOf('latest-upload')['sort'], '最新上傳');
       expect(paramsOf('watching-now')['sort'], '他們在看');
-      expect(paramsOf('amateur-nomask')['genre'], '素人業餘');
-      expect(paramsOf('amateur-nomask')['sort'], '最新上傳');
-      expect(paramsOf('hd-uncensored')['genre'], '高清無碼');
-      expect(paramsOf('ai-decensored')['genre'], 'AI解碼');
-      expect(paramsOf('china-av')['genre'], '國產AV');
-      expect(paramsOf('chinese-amateur')['genre'], '國產素人');
-      // javchu 特有：AI生成版块 = tags 中文字幕 + sort（无 genre）。
-      expect(paramsOf('chinese-subtitle')['tags'], '中文字幕');
-      expect(paramsOf('chinese-subtitle')['sort'], '最新上傳');
-      expect(paramsOf('chinese-subtitle').containsKey('genre'), isFalse);
-      expect(paramsOf('ranking-today')['sort'], '本日排行');
-      expect(paramsOf('ranking-this-month')['sort'], '本月排行');
+      // 全部版块参数里不得再出现死 AV genre 值。
+      for (final s in sections) {
+        expect(s.params.containsKey('genre'), isFalse,
+            reason: '版块 ${s.id} 不应有 genre 参数');
+      }
     });
   });
 }
