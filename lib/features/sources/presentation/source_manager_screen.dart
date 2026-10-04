@@ -69,8 +69,17 @@ class SourceManagerScreen extends StatefulWidget {
   State<SourceManagerScreen> createState() => _SourceManagerScreenState();
 }
 
-class _SourceManagerScreenState extends State<SourceManagerScreen> {
+class _SourceManagerScreenState extends State<SourceManagerScreen>
+    with SingleTickerProviderStateMixin {
   _SourceTab _tab = _SourceTab.list;
+  // 源列表 3 分类分段当前选中下标（0 小说 / 1 媒体 / 2 漫画）。
+  int _category = 0;
+  // 行 1（页面模式）下划线页签的指示条控制器：滑动动画归它管，
+  // 内容切换仍由 [_tab] 驱动（onTap 与 [_switchTab] 双向同步）。
+  late final TabController _modeTabCtrl = TabController(
+    length: _SourceTab.values.length,
+    vsync: this,
+  );
   final TextEditingController _urlController = TextEditingController();
 
   // ── 长按拖动排序的实时断口跟踪 ──
@@ -114,12 +123,20 @@ class _SourceManagerScreenState extends State<SourceManagerScreen> {
 
   @override
   void dispose() {
+    _modeTabCtrl.dispose();
     _dragGap.dispose();
     _urlController.dispose();
     _libraryUrlController.dispose();
     _libraryNameController.dispose();
     _collectApiUrlController.dispose();
     super.dispose();
+  }
+
+  /// 程序化切换页面模式（空状态「去导入源」等入口）：同步内容 [_tab]
+  /// 与页签指示条位置。
+  void _switchTab(_SourceTab t) {
+    setState(() => _tab = t);
+    _modeTabCtrl.animateTo(t.index);
   }
 
   // ── 源列表 ──
@@ -553,45 +570,26 @@ class _SourceManagerScreenState extends State<SourceManagerScreen> {
       List<PluginConfig> filteredSources) {
     return Column(
       children: <Widget>[
-        // 顶部 Tab 切换（等宽分段）
-        Padding(
-          padding: const EdgeInsets.symmetric(
-            horizontal: AppTokens.spaceLg,
-            vertical: AppTokens.spaceSm,
-          ),
-          child: AppSegmentedTabs<_SourceTab>(
-            selected: <_SourceTab>{_tab},
-            onSelectionChanged: (sel) {
-              if (sel.isNotEmpty) {
-                setState(() => _tab = sel.first);
+        // 顶部 Tab 切换：下划线文字页签（与分类行的胶囊分段互换后的格式），
+        // 等宽平分整屏；M3 TabBar 自带底部分隔线，不再另铺 Divider。
+        Material(
+          color: scheme.surface,
+          child: TabBar(
+            controller: _modeTabCtrl,
+            onTap: (int i) {
+              AppHaptics.selectionClick();
+              if (_tab.index != i) {
+                setState(() => _tab = _SourceTab.values[i]);
               }
             },
-            segments: <ButtonSegment<_SourceTab>>[
-              ButtonSegment<_SourceTab>(
-                value: _SourceTab.list,
-                icon: const Icon(Icons.list_rounded),
-                label: Text(l10n.sourceListTab),
-              ),
-              ButtonSegment<_SourceTab>(
-                value: _SourceTab.library,
-                icon: const Icon(Icons.cloud_rounded),
-                label: Text(l10n.libraryBookmarks),
-              ),
-              ButtonSegment<_SourceTab>(
-                value: _SourceTab.network,
-                icon: const Icon(Icons.cloud_download_rounded),
-                label: Text(l10n.networkImportTab),
-              ),
-              ButtonSegment<_SourceTab>(
-                value: _SourceTab.local,
-                icon: const Icon(Icons.file_present_rounded),
-                label: Text(l10n.localImportTab),
-              ),
+            tabs: <Widget>[
+              Tab(text: l10n.sourceListTab),
+              Tab(text: l10n.libraryBookmarks),
+              Tab(text: l10n.networkImportTab),
+              Tab(text: l10n.localImportTab),
             ],
           ),
         ),
-
-        const Divider(height: 1),
 
         // Tab 内容
         Expanded(
@@ -623,7 +621,7 @@ class _SourceManagerScreenState extends State<SourceManagerScreen> {
             icon: Icons.extension_rounded,
             message: l10n.sourceListEmpty,
             actionLabel: l10n.addSource,
-            onAction: () => setState(() => _tab = _SourceTab.network),
+            onAction: () => _switchTab(_SourceTab.network),
             secondaryActionLabel: l10n.enableRecommendedSources,
             onSecondaryAction: () => _enableRecommended(l10n),
           );
@@ -645,7 +643,7 @@ class _SourceManagerScreenState extends State<SourceManagerScreen> {
                 icon: Icons.extension_rounded,
                 message: l10n.sourceListEmpty,
                 actionLabel: l10n.addSource,
-                onAction: () => setState(() => _tab = _SourceTab.network),
+                onAction: () => _switchTab(_SourceTab.network),
                 secondaryActionLabel: l10n.enableRecommendedSources,
                 onSecondaryAction: () => _enableRecommended(l10n),
               ),
@@ -674,44 +672,54 @@ class _SourceManagerScreenState extends State<SourceManagerScreen> {
       );
     }
 
-    // filterType == null（设置页总入口）：3 分类 Tab（项 7）。
-    return DefaultTabController(
-      length: 3,
-      child: Column(
-        children: <Widget>[
-          if (sources.isNotEmpty) _buildEnableRecommendedTile(l10n),
-          Material(
-            color: scheme.surface,
-            child: TabBar(
-              // 3 分类等宽平分（小说/媒体/漫画）。
-              onTap: (_) => AppHaptics.selectionClick(),
-              tabs: <Widget>[
-                Tab(
-                    icon: const Icon(Icons.book_rounded),
-                    text: l10n.sourceCategoryNovel),
-                Tab(
-                    icon: const Icon(Icons.movie_rounded),
-                    text: l10n.sourceCategoryMedia),
-                Tab(
-                    icon: const Icon(Icons.image_rounded),
-                    text: l10n.sourceCategoryComic),
-              ],
-            ),
+    // filterType == null（设置页总入口）：3 分类胶囊分段（与页面模式行的
+    // 下划线页签互换后的格式），内容按下标直接切换（不再走 TabBarView，
+    // 分类间不再支持横滑）。
+    return Column(
+      children: <Widget>[
+        if (sources.isNotEmpty) _buildEnableRecommendedTile(l10n),
+        Padding(
+          padding: const EdgeInsets.symmetric(
+            horizontal: AppTokens.spaceLg,
+            vertical: AppTokens.spaceSm,
           ),
-          Expanded(
-            child: TabBarView(
-              children: <Widget>[
-                _buildCategoryList(l10n, _getCategorySources(sources, 0),
-                    l10n.sourceCategoryNovel),
-                _buildCategoryList(l10n, _getCategorySources(sources, 1),
-                    l10n.sourceCategoryMedia),
-                _buildCategoryList(l10n, _getCategorySources(sources, 2),
-                    l10n.sourceCategoryComic),
-              ],
-            ),
+          child: AppSegmentedTabs<int>(
+            selected: <int>{_category},
+            onSelectionChanged: (sel) {
+              if (sel.isNotEmpty) {
+                setState(() => _category = sel.first);
+              }
+            },
+            segments: <ButtonSegment<int>>[
+              ButtonSegment<int>(
+                value: 0,
+                icon: const Icon(Icons.book_rounded),
+                label: Text(l10n.sourceCategoryNovel),
+              ),
+              ButtonSegment<int>(
+                value: 1,
+                icon: const Icon(Icons.movie_rounded),
+                label: Text(l10n.sourceCategoryMedia),
+              ),
+              ButtonSegment<int>(
+                value: 2,
+                icon: const Icon(Icons.image_rounded),
+                label: Text(l10n.sourceCategoryComic),
+              ),
+            ],
           ),
-        ],
-      ),
+        ),
+        Expanded(
+          child: <Widget>[
+            _buildCategoryList(l10n, _getCategorySources(sources, 0),
+                l10n.sourceCategoryNovel),
+            _buildCategoryList(l10n, _getCategorySources(sources, 1),
+                l10n.sourceCategoryMedia),
+            _buildCategoryList(l10n, _getCategorySources(sources, 2),
+                l10n.sourceCategoryComic),
+          ][_category],
+        ),
+      ],
     );
   }
 
@@ -726,7 +734,7 @@ class _SourceManagerScreenState extends State<SourceManagerScreen> {
         icon: Icons.extension_rounded,
         message: l10n.sourceCategoryEmpty(categoryLabel),
         actionLabel: l10n.addSource,
-        onAction: () => setState(() => _tab = _SourceTab.network),
+        onAction: () => _switchTab(_SourceTab.network),
       );
     }
     return _buildSourceListView(l10n, sources);
@@ -792,22 +800,29 @@ class _SourceManagerScreenState extends State<SourceManagerScreen> {
             return false;
           },
           child: lowSpec
-              ? Padding(
-                  // 顶部留 8px 与媒体服务器等前置区块分开：卡内的顶部留白
-                  // 属于卡底色，不构成两张卡之间的间隔。
-                  padding: const EdgeInsets.fromLTRB(
-                    AppTokens.spaceMd,
-                    AppTokens.spaceSm,
-                    AppTokens.spaceMd,
-                    0,
-                  ),
-                  child: Material(
-                    color: AppTheme.cardContainer(scheme),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(AppTokens.radiusLg),
+              ? Align(
+                  // 外层（Expanded/TabBarView）给的是「必须撑满视口」的紧约束，
+                  // 会把 shrinkWrap 的收缩顶回去，导致整卡把末行以下的无源空白
+                  // 也裹进卡底色。Align 把约束放松成「至多这么大」，卡即可按
+                  // 内容收缩、靠顶对齐；行数超出视口时仍在卡内正常滚动。
+                  alignment: Alignment.topCenter,
+                  child: Padding(
+                    // 顶部留 8px 与媒体服务器等前置区块分开：卡内的顶部留白
+                    // 属于卡底色，不构成两张卡之间的间隔。
+                    padding: const EdgeInsets.fromLTRB(
+                      AppTokens.spaceMd,
+                      AppTokens.spaceSm,
+                      AppTokens.spaceMd,
+                      0,
                     ),
-                    clipBehavior: Clip.antiAlias,
-                    child: list,
+                    child: Material(
+                      color: AppTheme.cardContainer(scheme),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(AppTokens.radiusLg),
+                      ),
+                      clipBehavior: Clip.antiAlias,
+                      child: list,
+                    ),
                   ),
                 )
               : ClipRRect(
@@ -866,7 +881,9 @@ class _SourceManagerScreenState extends State<SourceManagerScreen> {
               ) +
               context.glassBarInset,
       // 媒体服务器区块场景：列表全部行直接撑开，滚动交给外层容器。
-      shrinkWrap: scrollsWithParent,
+      // 低配整卡模式同理收成内容高度：卡底只包住有源的行，末行以下的
+      // 空白区不再被强调色卡裹住（高配行段自绘本就如此）。
+      shrinkWrap: scrollsWithParent || lowSpec,
       physics: scrollsWithParent ? const NeverScrollableScrollPhysics() : null,
       // 禁用默认拖动手柄：拖动改由行内长按接管，行首不再被把手占位。
       buildDefaultDragHandles: false,
