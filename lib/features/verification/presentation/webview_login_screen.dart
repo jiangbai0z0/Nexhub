@@ -45,6 +45,31 @@ class _WebViewLoginScreenState extends State<WebViewLoginScreen> {
     // 登录前把相关 host 钉为完整浏览器 UA（Android 移动版），登录页与回灌后
     // 的抓取请求同 UA，cf_clearance 才有效。
     _applyFullBrowserUa();
+    // 让登录 WebView 跟随源网络覆盖（hosts/DoH/手动代理）：在线浏览/嗅探/验证
+    // 兜底均已接入，本页此前漏接 → 登录页直连系统 DNS 命中污染（Android）或
+    // 挂不上 --proxy-server 环境（Windows），整页加载失败。best-effort，
+    // apply 失败时照常打开 WebView（_env 为 null，等同旧行为）。
+    _applyFuture = WebviewSourceNetwork.instance
+        .applyForSource(widget.source)
+        .then((_) {
+      if (!mounted) return;
+      setState(() {
+        _env = WebviewSourceNetwork.instance.activeEnvironment;
+        _envReady = true;
+      });
+    });
+  }
+
+  @override
+  void dispose() {
+    final apply = _applyFuture;
+    if (apply != null) {
+      // dispose 先于 apply 完成时，等 apply 落地（含引用计数自增）后再释放。
+      unawaited(apply.whenComplete(
+        () => WebviewSourceNetwork.instance.releaseForSource(),
+      ));
+    }
+    super.dispose();
   }
 
   /// 把本源登录涉及的 host（登录地址 + 站点主域）UA 覆盖为完整浏览器 UA。
@@ -75,6 +100,17 @@ class _WebViewLoginScreenState extends State<WebViewLoginScreen> {
   /// 防止浮动按钮重复 pop。
   bool _popped = false;
 
+  /// WebView2 环境（Windows --proxy-server 跟随）；其余平台 / 无覆盖时为 null。
+  WebViewEnvironment? _env;
+
+  /// 网络跟随就绪前不创建 WebView：env 是创建期参数后补无效（Windows），
+  /// Android 也避免首屏请求抢在 ProxyController 覆盖生效前直连污染 DNS。
+  bool _envReady = false;
+
+  /// applyForSource 的在途 Future：dispose 时先等它完成再 release，保证引用
+  /// 计数严格配对（apply 在 `_refCount++` 前返回时 release 会空转）。
+  Future<void>? _applyFuture;
+
   CommentsLoginConfig? get _login => widget.source.comments?.login;
 
   String get _loginUrl => _login?.url ?? '';
@@ -100,7 +136,13 @@ class _WebViewLoginScreenState extends State<WebViewLoginScreen> {
     final AppLocalizations l10n = AppLocalizations.of(context);
     return Scaffold(
       appBar: AppBar(title: Text(l10n.sourceLogin)),
-      body: _supported ? _buildWebView(l10n) : _buildUnsupported(l10n),
+      body: !_supported
+          ? _buildUnsupported(l10n)
+          // 网络跟随就绪前不创建 WebView（env 是创建期参数）。apply 为
+          // best-effort，失败也会置 _envReady（_env 为 null → 等同旧行为）。
+          : (_envReady
+              ? _buildWebView(l10n)
+              : const Center(child: CircularProgressIndicator())),
       floatingActionButton: _supported
           ? FloatingActionButton.extended(
               onPressed: _onGetCookie,
@@ -118,9 +160,10 @@ class _WebViewLoginScreenState extends State<WebViewLoginScreen> {
       widget.source.site.baseUrl,
     );
     return InAppWebView(
-      // Windows 代理环境跟随：验证/登录页由 apply 窗口打开（verification_handler
-      // 已 await applyForSource），窗口内构造的 WebView 挂到 --proxy-server 环境。
-      webViewEnvironment: WebviewSourceNetwork.instance.activeEnvironment,
+      // 网络/代理环境跟随：本页 initState 已 applyForSource（源登录此前漏接，
+      // 登录页一直没跟随 hosts），构造时挂上 apply 结果环境（Windows）；
+      // Android 经 ProxyController 全局覆盖，此处保持 null 即可。
+      webViewEnvironment: _env,
       initialUrlRequest: URLRequest(url: WebUri(_loginUrl)),
       initialSettings: InAppWebViewSettings(userAgent: ua),
       onWebViewCreated: (controller) => _controller = controller,

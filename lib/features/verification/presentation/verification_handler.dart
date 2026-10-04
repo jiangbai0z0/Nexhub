@@ -56,8 +56,11 @@ Future<bool> handleVerificationRequest(
       // 让源 WebView 跟随源网络覆盖（hosts/DoH/代理），绕开 DNS 污染。
       final source = context.read<SourceRepository>().getById(error.sourceId);
       await WebviewSourceNetwork.instance.applyForSource(source);
-      if (!context.mounted) return false;
       try {
+        // mounted 检查放进 try：apply 已递增引用计数，任何早退都必须经 finally
+        // 释放（原实现直接 return false 跳过 release → 计数泄漏，后续 WebView
+        // 被旧源解析配置绑架）。
+        if (!context.mounted) return false;
         final outcome = await navigateToHtmlCapture(context, request: error);
         if (outcome == null) return false;
         // 把渲染后的整页 HTML 回灌给调用方，用于复用源选择器解析
@@ -77,8 +80,9 @@ Future<bool> handleVerificationRequest(
     // 让源 WebView 跟随源网络覆盖（hosts/DoH/代理），绕开 DNS 污染。
     final source = context.read<SourceRepository>().getById(error.sourceId);
     await WebviewSourceNetwork.instance.applyForSource(source);
-    if (!context.mounted) return false;
     try {
+      // mounted 检查放进 try（同上：早退必须经 finally 释放引用计数）。
+      if (!context.mounted) return false;
       final outcome = await navigateToExtraction(context, request: error);
       if (outcome == null) return false;
       // 把抽取到的真实地址回灌给调用方，用于复用源选择器解析
