@@ -318,8 +318,10 @@ void main() {
           reason: '清单 detailUrl 走分集解析而非正片兜底');
       expect(eps, contains('function episodes('));
       // 详情页对 playlist 页的兜底选择器（h1.playlist-title 只存在于清单页）。
-      expect(source.selectors.detail.title, contains('.playlist-title'));
-      expect(source.selectors.detail.cover, contains('img.main-thumb@src'));
+      final detailSel = source.selectors?['detail'];
+      expect(detailSel, isNotNull);
+      expect(detailSel!['title'], contains('.playlist-title'));
+      expect(detailSel['cover'], contains('img.main-thumb@src'));
     });
 
     test('v28 hosts 换权威实测 IP：剔快照/死域，与 DNS 实解一致', () {
