@@ -1480,32 +1480,40 @@ class HttpFetcher {
       ),
     );
     final int code = resp.statusCode ?? 0;
-    // 通知调用方响应头已到达（用于获取 Content-Length / 状态码判定等）
-    onHeaders?.call(resp.headers.map);
-    onStatusCode?.call(code);
-    if (code >= 300 && code < 400 && depth < kMaxRedirects) {
-      final String? loc =
-          resp.headers.value('location') ?? resp.headers.value('Location');
-      if (loc != null && loc.isNotEmpty) {
-        // 3xx 的响应体用不上，但必须排空并关闭底层流：否则连接不会被归还，
-        // 触发 "A resource failed to call close"，连接池占满后新请求会一直
-        // 挂起到超时（表现为莫名的 connectionTimeout）。
-        final body = resp.data;
-        if (body != null) {
-          try {
-            await body.stream.drain<void>();
-          } catch (_) {
-            // 排空失败不阻塞后续跳转。
-          }
+    // 判定是否继续跟随 3xx：是 → 本跳的头/状态码不回调（调用方判定用最终响应，
+    // 若 302 也回调，DioImageFileService 会按 <200||>=300 抛异常取消订阅，递归
+    // 跟随永远走不到 → 图片恒 302 失败）；否（非 3xx，或 3xx 但超深度/无
+    // Location 无法跟随）→ 回调本跳的头与状态码（3xx 终点交由调用方判定，
+    // 避免 status 悬空为 0）。
+    final String? redirectLoc = (code >= 300 && code < 400)
+        ? (resp.headers.value('location') ?? resp.headers.value('Location'))
+        : null;
+    final bool followRedirect = redirectLoc != null &&
+        redirectLoc.isNotEmpty &&
+        depth < kMaxRedirects;
+    if (!followRedirect) {
+      onHeaders?.call(resp.headers.map);
+      onStatusCode?.call(code);
+    }
+    if (followRedirect) {
+      // 3xx 的响应体用不上，但必须排空并关闭底层流：否则连接不会被归还，
+      // 触发 "A resource failed to call close"，连接池占满后新请求会一直
+      // 挂起到超时（表现为莫名的 connectionTimeout）。
+      final body = resp.data;
+      if (body != null) {
+        try {
+          await body.stream.drain<void>();
+        } catch (_) {
+          // 排空失败不阻塞后续跳转。
         }
-        final Uri next = Uri.parse(loc).isAbsolute
-            ? Uri.parse(loc)
-            : Uri.parse(url).resolve(loc);
-        yield* _getBytesStreamFollow(next.toString(), headers, net, fetchDest,
-            depth + 1,
-            onHeaders: onHeaders, onStatusCode: onStatusCode);
-        return;
       }
+      final Uri next = Uri.parse(redirectLoc).isAbsolute
+          ? Uri.parse(redirectLoc)
+          : Uri.parse(url).resolve(redirectLoc);
+      yield* _getBytesStreamFollow(next.toString(), headers, net, fetchDest,
+          depth + 1,
+          onHeaders: onHeaders, onStatusCode: onStatusCode);
+      return;
     }
     if (resp.data == null) return;
     await for (final chunk in resp.data!.stream) {
