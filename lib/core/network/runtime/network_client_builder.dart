@@ -10,6 +10,7 @@ import 'dart:io';
 import '../model/effective_network_profile.dart';
 import '../model/network_config.dart';
 import 'dns_resolver.dart';
+import 'host_order_relay.dart';
 import 'sni_policy.dart';
 
 /// 代理覆盖策略：返回非 null 时接管该 [Uri] 的代理决策，返回 null 则回落到
@@ -171,26 +172,50 @@ class NetworkClientBuilder {
       if (!tlsDirect) return tcpTask();
 
       // https 直连：工厂必须交回已握手的 SecureSocket（见方法注释的契约）。
-      return tcpTask().then((raw) {
-        final Future<Socket> secured = raw.socket.then<Socket>((socket) {
-          // Dart 的 SecureSocket.secure(host:) 同时决定 SNI 与证书校验名；
-          // host 传 IP 字面量时引擎不发送 SNI 扩展（免 SNI 模式的实现基础）。
-          final tlsName = switch (sniOverride) {
-            null => uri.host,
-            '' => socket.remoteAddress.host,
-            _ => sniOverride,
-          };
-          return SecureSocket.secure(
-            socket,
-            host: tlsName,
-            context: ctx,
-            // 与 client.badCertificateCallback=true 对齐：容忍自签，以及
-            // 自定义 SNI 与证书名的必然失配。
-            onBadCertificate: (_) => true,
-          );
-        });
-        return ConnectionTask.fromSocket(secured, raw.cancel);
-      });
+      //
+      // 通道形态：经 [HostOrderRelay] 中转——HttpClient 把明文 HTTP/1.1 报文
+      // 写给桥，桥把请求头重写为浏览器线形态（`Host` 大写名 + 请求行后第一
+      // 位；头名 Title-Case）后再拨号真目标。SDK 头存储为 HashMap（头名强制
+      // 小写、顺序由哈希定），应用层无法控制；部分 Cloudflare 站点对该形态做
+      // 指纹检测（小写/非首位的 host → 403）。参考 OkHttp 系客户端（天然
+      // Host 首位 + Title-Case）从不触发该指纹。桥不做域名特判：Host 首位
+      // 是 RFC 9112 规范形态，对普通站点无副作用。
+      final host = uri.host;
+      Future<Socket> dialTarget(String relayHost, int relayPort) async {
+        final task = await tcpTask();
+        final raw = await task.socket;
+        // Dart 的 SecureSocket.secure(host:) 同时决定 SNI 与证书校验名；
+        // host 传 IP 字面量时引擎不发送 SNI 扩展（免 SNI 模式的实现基础）。
+        final tlsName = switch (sniOverride) {
+          null => host,
+          '' => raw.remoteAddress.host,
+          _ => sniOverride,
+        };
+        return SecureSocket.secure(
+          raw,
+          host: tlsName,
+          context: ctx,
+          // 与 client.badCertificateCallback=true 对齐：容忍自签，以及
+          // 自定义 SNI 与证书名的必然失配。
+          onBadCertificate: (_) => true,
+        );
+      }
+
+      // 桥自身不可用（bind/连接失败等）时退回旧直连路径，不放大故障面。
+      Future<ConnectionTask<Socket>> connectViaRelay() async {
+        try {
+          return await HostOrderRelay.instance.attach(dialTarget);
+        } on Object {
+          final socketFuture = dialTarget(host, targetPort);
+          return ConnectionTask.fromSocket(socketFuture, () {
+            // 拨号完成前取消：完成后销毁，防泄漏。
+            unawaited(socketFuture.then<void>((s) => s.destroy(),
+                onError: (Object _) {}));
+          });
+        }
+      }
+
+      return connectViaRelay();
     };
   }
 
