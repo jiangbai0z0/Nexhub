@@ -101,6 +101,15 @@ class VerificationDetector {
     'attention required',
     'verify you are human',
     'checking your browser',
+    // MacCMS「系统安全验证」拦截页（233动漫等 MacCMS 站搜索/筛选路由触发，
+    // 正文只有「因访问过多，请点击下方【继续访问】」弹窗）：mx-mac_msg_jump 是
+    // 该模板专有的弹窗容器类，verify_submit 是「继续访问」按钮类，verify_check
+    // 是页内联脚本的 AJAX 接口名。三者只出现在验证页模板中——实测 233dm 的
+    // 首页/搜索结果/详情页正文 0 命中，正常内容页不会误伤。不认出来会把验证页
+    // HTML 当真实内容缓存解析 → 列表永远 0 条且不弹验证。
+    'mx-mac_msg_jump',
+    'verify_submit',
+    'verify_check',
   ];
 
   /// 被动 CF 标记：Cloudflare 为「每一个」经它代理的页面注入（包括正常内容页，

@@ -875,6 +875,14 @@ class HttpFetcher {
     if (host != null && host.isNotEmpty) _verifyCooldown.remove(host);
   }
 
+  /// 公开入口：验证已被自动通过后清除该 host 的验证冷却。
+  ///
+  /// 供 SilentHtmlCapture 自动点击 MacCMS「继续访问」成功后调用：getHtml 检出
+  /// 验证页时 [_recordAndThrowVerify] 已写入冷却，但验证随即在 WebView 会话内
+  /// 通过并回灌了 Cookie，不该让同站下一个请求再被冷却闸门拖住（对齐 403 重试
+  /// 循环内的清理语义）。
+  void clearVerifyCooldownForUrl(String url) => _clearVerifyCooldown(url);
+
   /// 重试退避时长：带随机抖动打散节拍，避免多请求同时重试形成新的突发。
   Duration _retryBackoff(int attempt, {required bool throttled}) {
     final int base = throttled ? 2500 : 600;

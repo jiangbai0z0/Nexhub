@@ -47,6 +47,15 @@ class SilentHtmlCapture {
   /// 挑战页自动通过观察窗：cf 非交互式挑战通常 3–8s 内放行并重定向。
   static const Duration _challengeWait = Duration(seconds: 10);
 
+  /// MacCMS 验证页「继续访问」自动点击上限：覆盖 jQuery 迟到（空点）与
+  /// 单次 POST 失败重试；超出即放弃，交由调用方回退可见验证页手动点击。
+  static const int _maxVerifyClicks = 5;
+
+  /// MacCMS「继续访问」自动点击脚本：按钮存在才点击，避免在其它页面上空跑。
+  static const String _macCmsVerifyClickJs =
+      "(function(){var b=document.querySelector('.verify_submit');"
+      'if(!b){return false;}b.click();return true;})()';
+
   static const Duration _pollInterval = Duration(milliseconds: 1000);
 
   /// 视为「真实渲染内容」的最小 HTML 长度。headless WebView 在以下情况会拿到
@@ -188,6 +197,23 @@ class SilentHtmlCapture {
         onLoadStop: (controller, uri) {
           if (!pageLoaded.isCompleted) pageLoaded.complete();
         },
+        // headless 无 UI：站点 JS 的 alert/confirm（如 MacCMS 验证 POST 失败的
+        // alert(r.msg)）必须由宿主接管，否则弹窗挂起 JS 队列，轮询与自动点击
+        // 全部卡死直到超时。
+        onJsAlert: (controller, request) async {
+          debugPrint(
+            '[SilentHtmlCapture] 页面 alert(接管): '
+            '${request.message ?? ''} url=$url',
+          );
+          return JsAlertResponse(handledByClient: true);
+        },
+        onJsConfirm: (controller, request) async {
+          debugPrint(
+            '[SilentHtmlCapture] 页面 confirm(接管取消): '
+            '${request.message ?? ''} url=$url',
+          );
+          return JsConfirmResponse(handledByClient: true);
+        },
       );
       await webview.run();
       await pageLoaded.future.timeout(_loadTimeout, onTimeout: () {});
@@ -207,8 +233,24 @@ class SilentHtmlCapture {
       // 兼顾「抓到完整内容」与「不过度等待」。
       String? bestHtml;
       int? prevLen;
+      var verifyClicks = 0;
       while (true) {
         final html = await _safeGetHtml(controller);
+        // MacCMS「系统安全验证」自动通过（233动漫搜索/筛选路由等）：页面带
+        // 「继续访问」按钮（.verify_submit）时自动点击——站点自带 JS 会计算
+        // token POST verify_check 后 reload 出真实内容，全程无需用户交互。
+        // jQuery 从第三方域异步加载，早点的几次可能落在处理器绑定前（空点），
+        // 故在观察窗内限次重试；成功后页面 reload，按钮消失不再命中。
+        if (html != null &&
+            html.contains('verify_submit') &&
+            verifyClicks < _maxVerifyClicks) {
+          verifyClicks++;
+          debugPrint(
+            '[SilentHtmlCapture] 检测到 MacCMS 系统安全验证，自动点击继续访问 '
+            '($verifyClicks/$_maxVerifyClicks) url=$url',
+          );
+          await _evalJs(controller, _macCmsVerifyClickJs);
+        }
         if (html != null &&
             html.isNotEmpty &&
             html.length >= _minHtmlBytes &&
@@ -222,6 +264,7 @@ class SilentHtmlCapture {
           // 内容已稳定 → 视为渲染完成，提前返回最完整的一份。
           if (prevLen != null && (html.length - prevLen).abs() <= 256) {
             await _syncCookies(url);
+            _clearCooldownIfAutoPassed(url, verifyClicks);
             debugPrint(
               '[SilentHtmlCapture] 静默渲染抓取成功(已稳定) host='
               '${Uri.tryParse(url)?.host} htmlLen=${html.length}',
@@ -243,6 +286,7 @@ class SilentHtmlCapture {
       if (bestHtml != null && bestHtml.length >= _minHtmlBytes) {
         // 观察窗结束仍未稳定，但已拿到非挑战正文：回传最长一份（最完整）。
         await _syncCookies(url);
+        _clearCooldownIfAutoPassed(url, verifyClicks);
         debugPrint(
           '[SilentHtmlCapture] 静默渲染抓取成功 host='
           '${Uri.tryParse(url)?.host} htmlLen=${bestHtml.length}',
@@ -364,6 +408,22 @@ class SilentHtmlCapture {
       return await controller.evaluateJavascript(source: source);
     } on Object {
       return null;
+    }
+  }
+
+  /// 自动点击「继续访问」成功通过后的收尾：清除 getHtml 检出验证页时写入的
+  /// host 验证冷却，避免同站下一个请求被冷却闸门静默拖住（对齐 HttpFetcher
+  /// 403 重试循环内的清理语义）。未发生自动点击时不动作。
+  static void _clearCooldownIfAutoPassed(String url, int verifyClicks) {
+    if (verifyClicks <= 0) return;
+    try {
+      HttpFetcher.instance.clearVerifyCooldownForUrl(url);
+      debugPrint(
+        '[SilentHtmlCapture] MacCMS 验证已自动通过，清除 host 验证冷却 '
+        'url=$url',
+      );
+    } on Object {
+      // 收尾失败不影响抓取结果。
     }
   }
 

@@ -644,6 +644,8 @@ class _WebViewVerificationScreenState extends State<WebViewVerificationScreen> {
                     if (!_pageLoaded && mounted) {
                       setState(() => _pageLoaded = true);
                     }
+                    // MacCMS「系统安全验证」自动通过（详见 _autoClickMacCmsVerify）。
+                    await _autoClickMacCmsVerify(controller);
                     await _snifferBridge.deepScan();
                   },
                 ),
@@ -784,6 +786,8 @@ class _WebViewVerificationScreenState extends State<WebViewVerificationScreen> {
                       }
                       // 页面加载完成后立即同步 Cookie，确保后续抽取与会话一致。
                       await _syncWebviewCookies();
+                      // MacCMS「系统安全验证」自动通过（详见 _autoClickMacCmsVerify）。
+                      await _autoClickMacCmsVerify(controller);
                       // 若正在等待重定向页加载（抽取多级跳转），用此 completer 放行。
                       // v6 无 controller.addOnLoadStopCallback，复用本回调驱动。
                       if (_loadStopCompleter != null &&
@@ -1049,6 +1053,8 @@ class _WebViewVerificationScreenState extends State<WebViewVerificationScreen> {
                       }
                       // 页面加载完成后立即同步 Cookie，确保后续解析与会话一致。
                       await _syncWebviewCookies();
+                      // MacCMS「系统安全验证」自动通过（详见 _autoClickMacCmsVerify）。
+                      await _autoClickMacCmsVerify(controller);
                       // 嗅探兜底：DOM 深度扫描（<video>/<source>/player_ 全局）。
                       await _snifferBridge.deepScan();
                     },
@@ -1146,6 +1152,29 @@ class _WebViewVerificationScreenState extends State<WebViewVerificationScreen> {
   ///
   /// 先同步 Cookie，再调用 `controller.getHtml()` 拿到 JS 渲染完成后的完整
   /// HTML，交由调用方用既有选择器解析（修复「列表由 JS 动态渲染、静态抓取为空」）。
+  /// MacCMS「系统安全验证」自动通过：当前页带「继续访问」按钮
+  /// （`.verify_submit`，233动漫等 MacCMS 站搜索/筛选路由的拦截页）时自动点击。
+  /// 站点自带 JS 会计算 token POST verify_check 后 `location.reload()` 出真实
+  /// 内容，reload 会再次回调 onLoadStop。点击失败（jQuery 迟到等）不影响流程，
+  /// 用户仍可手动点击——站点原按钮一直在。
+  Future<void> _autoClickMacCmsVerify(InAppWebViewController controller) async {
+    try {
+      final clicked = await controller.evaluateJavascript(
+        source:
+            "(function(){var b=document.querySelector('.verify_submit');"
+            'if(!b){return false;}b.click();return true;})()',
+      );
+      final hit = clicked == true || clicked == 'true';
+      if (hit) {
+        debugPrint(
+          '[WebViewVerification] 检测到 MacCMS 系统安全验证页，已自动点击继续访问',
+        );
+      }
+    } on Object {
+      // JS 执行失败不影响既有流程：保留用户手动点击兜底。
+    }
+  }
+
   Future<void> _captureHtml() async {
     final controller = _webViewController;
     if (controller == null) return;
@@ -1156,6 +1185,24 @@ class _WebViewVerificationScreenState extends State<WebViewVerificationScreen> {
     try {
       await _syncWebviewCookies();
       final html = await controller.getHtml();
+      // 守卫：当前仍是验证/挑战页时回灌只会让选择器解析出 0 条并被缓存成
+      // 「正常内容」（MacCMS 系统安全验证页实测 5KB、结构完整）。此时不 pop，
+      // 顺带再点一次「继续访问」，提示用户等页面出真实内容后再抓取。
+      if (html != null &&
+          html.isNotEmpty &&
+          VerificationDetector.isVerificationRequired(
+            statusCode: 200,
+            body: html,
+          )) {
+        await _autoClickMacCmsVerify(controller);
+        if (mounted) {
+          setState(() {
+            _extracting = false;
+            _extractionError = AppLocalizations.of(context).verificationRequired;
+          });
+        }
+        return;
+      }
       if (html != null && html.isNotEmpty) {
         if (mounted) {
           Navigator.of(context).pop(

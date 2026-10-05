@@ -229,5 +229,48 @@ void main() {
         isFalse,
       );
     });
+
+    // ---- MacCMS「系统安全验证」拦截页（233动漫搜索/筛选路由）回归 ----
+
+    test('MacCMS 系统安全验证页（继续访问按钮）requires verification', () {
+      // 实测 cn.233dm.com /search/*.html 未过会话时返回的整页（200，~5.3KB）：
+      // mx-mac_msg_jump 弹窗容器 + verify_submit「继续访问」按钮 + 页内联
+      // verify_check AJAX 脚本。不判为验证页会把该 HTML 缓存解析 → 搜索恒 0 条。
+      const body = '<!DOCTYPE html><html lang="en"><head>'
+          '<title>系统安全验证 - 233动漫_cn.233dm.com</title>'
+          '<style>.mx-mac_msg_jump{margin:35px auto}</style>'
+          '<script>var maccms={"path":"","mid":"1"};</script>'
+          "<script>\$('.verify_submit').click(function(){"
+          "MAC.Ajax(maccms.path+'/index.php/ajax/verify_check?type=search',"
+          "'post','json',{i:refresh()},function(r){location.reload();});});"
+          '</script></head><body>'
+          '<div class="mx-mac_msg_jump">'
+          '<div class="text">因访问过多，请点击下方【继续访问】</div>'
+          '<div class="form"><div class="jump item">'
+          '<input type="button" class="verify_submit btnverify" value="继续访问">'
+          '</div></div></div></body></html>';
+      expect(
+        VerificationDetector.isVerificationRequired(statusCode: 200, body: body),
+        isTrue,
+      );
+    });
+
+    test('MacCMS 正常搜索结果页（真实 200 正文）不得误判为验证页', () {
+      // 实测过验证后的搜索结果页结构：JIHA_djfJghJ 列表 + h4.title + 封面。
+      // 正常内容页不含 mx-mac_msg_jump/verify_submit/verify_check 任一标记，
+      // 加入特征后不得触发验证循环。
+      const body = '<!DOCTYPE html><html><head><title>搜索 火影 - 233动漫</title>'
+          '</head><body><ul class="JIHA_djfJghJ clearfix">'
+          '<li class="col-md-6"><div>'
+          '<a class="lazyload" href="/anime/0f7d64bb.html" data-original='
+          '"https://as.cfhls.top/upload/vod/1.jpg"><span class="GDC_Fbfa">'
+          '<b>1080P</b></span></a>'
+          '<div><h4 class="title text-overflow"><a href="/anime/0f7d64bb.html">'
+          '火影忍者剧场版</a></h4></div></div></li></ul></body></html>';
+      expect(
+        VerificationDetector.isVerificationRequired(statusCode: 200, body: body),
+        isFalse,
+      );
+    });
   });
 }
