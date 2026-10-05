@@ -16,8 +16,8 @@ void main() {
   });
 
   group('pms_hanime v22→v28 配置消费', () {
-    test('版本号与基础块保持 v21 兼容（v29 = 全量值域 + 筛选路由声明）', () {
-      expect(source.version, 29);
+    test('版本号与基础块保持 v21 兼容（v30 = 收藏三形态 + 播放清单）', () {
+      expect(source.version, 30);
       expect(source.id, 'pms_hanime');
       expect(source.type, SourceType.animeSource);
       expect(source.routes.containsKey('latest'), isTrue);
@@ -297,6 +297,29 @@ void main() {
       // 引擎入口 fallback 契约（_runScriptWithRaw: entry = override.function ?? apiName）
       expect(script, contains('function favList('));
       expect(script, contains('function favListParse('));
+    });
+
+    test('v30 收藏三形态：folders 三类文件夹、favList 播放清单内容、episodes 分集', () {
+      final ov = source.parser.overrides ?? const <String, ParserOverride>{};
+      final folders = ov['folders']?.script ?? '';
+      expect(folders, contains('playlists'), reason: 'folders 动态拼播放清单文件夹');
+      expect(folders, contains("__fetchUrl:base+'/user/'+u+'/playlists'"),
+          reason: 'meta 二跳拉 playlists 列表页');
+      expect(folders, contains('function foldersParse('));
+      expect(folders, isNot(contains("'count'")), reason: '类别总数站点不展示，count 不输出即 UI 无 badge');
+      final fav = ov['favList']?.script ?? '';
+      expect(fav, contains('function favPlaylistParse('),
+          reason: 'playlist?list= 内容页独立解析器');
+      expect(fav, contains('data-href'), reason: '内容页卡片以 data-href 承载 watch 链接');
+      expect(fav, contains('.replace(/&list=\\d+/g,'),
+          reason: '详情 URL 清洗 &list= 尾巴，避免详情/播放串台');
+      final eps = ov['episodes']?.script ?? '';
+      expect(eps, contains("du0.indexOf('playlist?list=')>=0"),
+          reason: '清单 detailUrl 走分集解析而非正片兜底');
+      expect(eps, contains('function episodes('));
+      // 详情页对 playlist 页的兜底选择器（h1.playlist-title 只存在于清单页）。
+      expect(source.selectors.detail.title, contains('.playlist-title'));
+      expect(source.selectors.detail.cover, contains('img.main-thumb@src'));
     });
 
     test('v28 hosts 换权威实测 IP：剔快照/死域，与 DNS 实解一致', () {
