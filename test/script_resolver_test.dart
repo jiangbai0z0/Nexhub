@@ -362,6 +362,66 @@ void main() {
       expect(items.length, 1);
       expect(items.first.title, 'Rendered');
     });
+
+    group('meta 预取地址解析与安全校验', () {
+      test('根相对路径拼接到 base，绝对地址原样保留', () {
+        expect(
+          ScriptResolver.debugResolveMetaFetchUrl(
+              '/vodplay/1-1-1.html', 'https://www.dmwo.one'),
+          'https://www.dmwo.one/vodplay/1-1-1.html',
+        );
+        expect(
+          ScriptResolver.debugResolveMetaFetchUrl(
+              'https://cdn.example.com/x.json', 'https://x.com'),
+          'https://cdn.example.com/x.json',
+        );
+        // scheme 相对：沿用 base 的 https。
+        expect(
+          ScriptResolver.debugResolveMetaFetchUrl('//cdn.example.com/x',
+              'https://x.com'),
+          'https://cdn.example.com/x',
+        );
+      });
+
+      test('非 http(s) 与 localhost/私有/保留地址一律拒绝（返回空串）', () {
+        expect(ScriptResolver.debugResolveMetaFetchUrl('file:///etc/passwd',
+            'https://x.com'), '');
+        expect(ScriptResolver.debugResolveMetaFetchUrl('ftp://x.com/y',
+            'https://x.com'), '');
+        expect(ScriptResolver.debugResolveMetaFetchUrl('http://localhost/x',
+            'https://x.com'), '');
+        expect(ScriptResolver.debugResolveMetaFetchUrl('http://127.0.0.1/x',
+            'https://x.com'), '');
+        expect(ScriptResolver.debugResolveMetaFetchUrl('http://10.0.0.9/x',
+            'https://x.com'), '');
+        expect(ScriptResolver.debugResolveMetaFetchUrl('http://192.168.1.2/x',
+            'https://x.com'), '');
+        expect(ScriptResolver.debugResolveMetaFetchUrl('http://172.20.3.4/x',
+            'https://x.com'), '');
+        expect(ScriptResolver.debugResolveMetaFetchUrl('http://169.254.1.9/x',
+            'https://x.com'), '');
+        // 环回的 IPv4-mapped IPv6 形态同样拒绝。
+        expect(ScriptResolver.debugResolveMetaFetchUrl(
+            'http://[::ffff:127.0.0.1]/x', 'https://x.com'), '');
+        // 公网地址不受影响。
+        expect(ScriptResolver.debugResolveMetaFetchUrl('http://8.8.8.8/x',
+            'https://x.com'), 'http://8.8.8.8/x');
+      });
+
+      test('meta fetchUrl 安全校验不过 → 该跳降级为空结果，不发起请求', () async {
+        final resolver = ScriptResolver(
+          engineFactory: (_) => FakeJsEngine(<String, dynamic>{
+            '__meta': true,
+            '__fetchUrl': 'http://127.0.0.1/vodplay/1-1-1.html',
+            '__fetchResponseType': 'text',
+            '__processor': '__processAltLine',
+          }),
+        );
+        final items = await resolver.resolve(_source, 'latest')
+            as List<MediaItem>;
+        expect(items, isEmpty);
+      });
+    });
   });
 }
 

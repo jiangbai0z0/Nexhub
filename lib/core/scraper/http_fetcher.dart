@@ -748,6 +748,13 @@ class HttpFetcher {
   /// 对连接层错误（连接重置、连接/接收/发送超时）自动重试最多 [_maxHttpRetries]
   /// 次并递增退避，显著改善「收藏页/标签搜索偶发空白」类问题；4xx/5xx 与验证
   /// 挑战不在此重试（交由各自逻辑处理）。
+  /// 进行中的相同 GET 复用表：URL+Referer+头+网络档案完全一致的并发 GET 只发
+  /// 一次。真实场景：详情页 detail/episodes 两个解析器并行抓同一 /voddetail
+  /// 页、首页板块与其它入口同时拉同一 latest 路由——同站闸门只是把它们排成
+  /// 前后两枪，慢站上首屏耗时直接翻倍。仅重叠窗口内共享（完成即移除），
+  /// 后续刷新/翻页语义不受影响。
+  final Map<String, Future<String>> _inflightGets = <String, Future<String>>{};
+
   Future<String> getHtml(
     String url, {
     Map<String, String>? headers,
@@ -755,12 +762,50 @@ class HttpFetcher {
     bool stealth = true,
     EffectiveNetworkProfile? net,
   }) async {
+    final key = _inflightGetKey(url, referer, headers, net);
+    final existing = _inflightGets[key];
+    if (existing != null) return existing;
+    final future = _getHtmlGated(url, headers, referer, net, stealth);
+    _inflightGets[key] = future;
+    try {
+      return await future;
+    } finally {
+      // 仅当仍是自己时移除：避免误删后来者注册的复用项。
+      if (identical(_inflightGets[key], future)) _inflightGets.remove(key);
+    }
+  }
+
+  /// [getHtml] 的闸门执行体：全局并发 → 同 host 间隔 → 重试，最后释放信号量。
+  Future<String> _getHtmlGated(
+    String url,
+    Map<String, String>? headers,
+    String? referer,
+    EffectiveNetworkProfile? net,
+    bool stealth,
+  ) async {
     await _gateRequest(url, stealth);
     try {
       return await _getHtmlWithRetry(url, headers, referer, net);
     } finally {
       _requestSemaphore.release();
     }
+  }
+
+  /// 进行中 GET 复用表的键：URL + Referer + 显式头（排序后拼接）+ 网络档案。
+  /// 每次请求实际附带的指纹 UA/Cookie 由 URL 唯一决定，无需入键。
+  static String _inflightGetKey(
+    String url,
+    String? referer,
+    Map<String, String>? headers,
+    EffectiveNetworkProfile? net,
+  ) {
+    final h = (headers == null || headers.isEmpty)
+        ? ''
+        : (headers.entries.toList()
+              ..sort((a, b) => a.key.compareTo(b.key)))
+            .map((e) => '${e.key}=${e.value}')
+            .join('&');
+    return '$url\n${referer ?? ''}\n${net?.signature ?? ''}\n$h';
   }
 
   /// [getHtml] 的重试包装：对可重试的连接层错误最多重试 [_maxHttpRetries] 次。

@@ -6,6 +6,7 @@ library;
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 
@@ -404,6 +405,8 @@ class ScriptResolver implements SourceResolver {
       // 单跳脚本（现有全部源）处理器直接返回数据，循环一次即退出，无副作用。
       var hop = 0;
       const maxMetaHops = 4;
+      // meta 预取地址的拼接基准：源激活镜像 base（与路由 URL 同语义）。
+      final metaBase = ConfigLoader.instance.getActiveMirror(source);
       while (result is Map &&
           (result as Map<dynamic, dynamic>)['__meta'] == true &&
           ((result as Map<dynamic, dynamic>)['__fetchUrl'] is String ||
@@ -413,7 +416,10 @@ class ScriptResolver implements SourceResolver {
         final meta = result as Map<dynamic, dynamic>;
         {
           // 裸块：沿用原单跳处理体的缩进，diff 最小化。
-          final fetchUrl = meta['__fetchUrl'] as String? ?? '';
+          final rawFetchUrl = meta['__fetchUrl'] as String? ?? '';
+          // 根相对路径（/vodplay/1-1-1.html）按路由语义拼到激活镜像 base，
+          // 绝对地址仅校验不改动；校验失败返回空串（见 _resolveMetaFetchUrl）。
+          final fetchUrl = _resolveMetaFetchUrl(rawFetchUrl, metaBase);
           final processor = meta['__processor'] as String? ?? '';
           // meta 协议扩展字段（通用，仍不写死任何站点逻辑）：
           // __fetchMethod : 'get'(默认) | 'post'
@@ -429,11 +435,28 @@ class ScriptResolver implements SourceResolver {
           // 用于「一页只有 N 个入口、真实数据要逐个跟进」的站点（如画廊逐页取图）。
           // 引擎在 Dart 侧并发抓取，结果按输入顺序组成 List<String> 交给
           // `__processor` 同步处理。通用能力，不含任何站点逻辑。
-          final fetchUrls = (meta['__fetchUrls'] as List?)
+          final rawFetchUrls = (meta['__fetchUrls'] as List?)
                   ?.map((e) => e.toString())
                   .where((e) => e.isNotEmpty)
                   .toList(growable: false) ??
               const <String>[];
+          final fetchUrls = rawFetchUrls
+              .map((u) => _resolveMetaFetchUrl(u, metaBase))
+              .toList(growable: false);
+          // 安全校验不通过（非 http(s) 或 localhost/私有等保留地址）→ 原始地址
+          // 非空但解析结果为空：终止 meta 链按预取失败降级，绝不发起该请求。
+          final unsafeFetch = (rawFetchUrl.isNotEmpty ||
+                  rawFetchUrls.isNotEmpty) &&
+              fetchUrl.isEmpty &&
+              fetchUrls.isEmpty;
+          if (unsafeFetch) {
+            debugPrint(
+                '[ScriptResolver] meta 预取地址被安全校验拒绝: url=$rawFetchUrl urls=$rawFetchUrls');
+            ParseDiagnostics.log(source.id,
+                '❌ meta预取地址被拒(非http(s)/保留host): $rawFetchUrl');
+            result = const <dynamic>[];
+            continue;
+          }
           final fetchConcurrency =
               (meta['__fetchConcurrency'] as num?)?.toInt() ?? 0;
           final fetchHeaders = <String, String>{};
@@ -745,6 +768,83 @@ class ScriptResolver implements SourceResolver {
   /// 批量预取的默认并发数与硬上限。
   static const int _defaultFetchConcurrency = 6;
   static const int _maxFetchConcurrency = 16;
+
+  /// meta 预取地址解析（通用，不写死站点逻辑）：
+  ///
+  /// 脚本返回的 `__fetchUrl` / `__fetchUrls` 常是根相对路径（如
+  /// `/vodplay/1-1-1.html`）——与路由 URL 同语义拼接到源激活镜像 base 上；
+  /// 绝对地址（含 scheme 相对 `//host/x`）经 Uri.resolve 原样保留。
+  ///
+  /// 返回空串表示「原始地址非空但未通过安全校验」（调用方按本跳失败降级）。
+  /// 校验对齐 Mimosa 安全约束：仅允许 http/https，host 拒绝 localhost、
+  /// 环回、私有与保留地址。
+  static String _resolveMetaFetchUrl(String raw, String base) {
+    final url = raw.trim();
+    if (url.isEmpty) return url;
+    final lower = url.toLowerCase();
+    final String resolved;
+    if (lower.startsWith('http://') || lower.startsWith('https://')) {
+      resolved = url;
+    } else {
+      final b = base.endsWith('/') ? base : '$base/';
+      final parsed = Uri.tryParse(url);
+      final baseUri = Uri.tryParse(b);
+      if (parsed == null || baseUri == null) return url; // 畸形交由下游失败
+      resolved = baseUri.resolveUri(parsed).toString();
+    }
+    return _isSafeHttpUrl(resolved) ? resolved : '';
+  }
+
+  /// 测试可见：锁死 meta 预取地址「相对拼接 + 安全校验」契约。
+  @visibleForTesting
+  static String debugResolveMetaFetchUrl(String raw, String base) =>
+      _resolveMetaFetchUrl(raw, base);
+
+  /// SSRF 防护：仅接受 http/https，且 host 不是 localhost/环回/私有/保留地址。
+  /// 普通域名不在静态层判断（DNS 解析侧限制超出本层职责）。
+  static bool _isSafeHttpUrl(String url) {
+    final uri = Uri.tryParse(url);
+    if (uri == null) return false;
+    final scheme = uri.scheme.toLowerCase();
+    final host = uri.host.toLowerCase();
+    if ((scheme != 'http' && scheme != 'https') || host.isEmpty) return false;
+    if (host == 'localhost' || host.endsWith('.localhost')) return false;
+    // IPv4-mapped IPv6（::ffff:127.0.0.1）先还原成 IPv4 再判。
+    if (host.startsWith('::ffff:') && host.contains('.')) {
+      return _isSafeIPv4(host.substring(7));
+    }
+    final addr = InternetAddress.tryParse(host);
+    if (addr == null) return true; // 域名主机名，静态层放行
+    if (addr.type == InternetAddressType.IPv4) return _isSafeIPv4(addr.address);
+    // IPv6：`::`（未指定）、`::1`（环回）、fe80::/10（链路本地）、
+    // fc00::/7（唯一本地）、ff00::/8（组播）一律拒绝。
+    if (host == '::' || host == '::1') return false;
+    final first = int.tryParse(host.split(':').first, radix: 16);
+    if (first == null) return true;
+    return !((first & 0xffc0) == 0xfe80 ||
+        (first & 0xfe00) == 0xfc00 ||
+        (first & 0xff00) == 0xff00);
+  }
+
+  /// IPv4 保留段判定：未指定(0/8)、环回(127/8)、私有(10/8、172.16/12、
+  /// 192.168/16)、链路本地(169.254/16)、CGNAT(100.64/10)、文档段与组播/保留。
+  static bool _isSafeIPv4(String address) {
+    final o =
+        address.split('.').map((e) => int.tryParse(e) ?? -1).toList();
+    if (o.length != 4 || o.any((e) => e < 0 || e > 255)) return false;
+    bool r(int v, int lo, int hi) => v >= lo && v <= hi;
+    return !(o[0] == 0 ||
+        o[0] == 10 ||
+        o[0] == 127 ||
+        (o[0] == 169 && o[1] == 254) ||
+        (o[0] == 172 && r(o[1], 16, 31)) ||
+        (o[0] == 192 && o[1] == 168) ||
+        (o[0] == 100 && r(o[1], 64, 127)) ||
+        (o[0] == 192 && o[1] == 0 && o[2] == 2) ||
+        (o[0] == 198 && o[1] == 51 && o[2] == 100) ||
+        (o[0] == 203 && o[1] == 0 && o[2] == 113) ||
+        o[0] >= 224);
+  }
 
   /// JS 引擎返回值的防御性解码。
   ///

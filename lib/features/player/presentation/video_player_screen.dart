@@ -725,7 +725,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           source.parser.overrides?['video']?.type == 'script') {
         if (isOuter) _resolveProgress.value = 0.5;
         try {
-          return await service.fetchVideoUrl(source, episodeUrl);
+          final scriptResult = await service.fetchVideoUrl(source, episodeUrl);
+          // 脚本「成功返回但产出空直链」（meta 预取失败/站点改版）同样视为
+          // 解析失败：直接 open('') 必然黑屏报错，落回下方嗅探链路才有救。
+          if (scriptResult.url.isNotEmpty) return scriptResult;
         } on Object {
           // 脚本解析失败 → 落回嗅探优先的通用流程（下方步骤 1/2）。
         }
