@@ -6099,26 +6099,31 @@ class _ComicReaderScreenState extends State<ComicReaderScreen>
     // 控制栏底色跟随应用主题（暗色即深色），而非读者背景色：
     // 这样无论读者背景设为黑/白/护眼绿，图标文字都始终与底色形成对比，夜色模式不会看不清。
     final Color scrim = Theme.of(context).colorScheme.surface;
-    return SafeArea(
-      child: MouseRegion(
-        // 桌面端控件光标反馈：控制栏按钮 hover 显示 click 光标。
-        cursor: SystemMouseCursors.click,
-        child: Container(
-          key: _topBarKey,
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topCenter,
-              end: Alignment.bottomCenter,
-              colors: <Color>[
-                scrim.withValues(alpha: 0.95),
-                scrim.withValues(alpha: 0)
-              ],
-            ),
+    // 渐变背景容器铺到屏幕最顶端（含状态栏 / 刘海区），SafeArea 只包住 Row 内容
+    // 负责避让安全区。此前 SafeArea 包在最外层，背景整体被推到状态栏下方，
+    // 最顶端露出一条漫画画面（shortEdges 窗口进刘海后尤为明显）。
+    // bottom:false——顶栏不含导航条高度的底部空白。
+    return MouseRegion(
+      // 桌面端控件光标反馈：控制栏按钮 hover 显示 click 光标。
+      cursor: SystemMouseCursors.click,
+      child: Container(
+        key: _topBarKey,
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: <Color>[
+              scrim.withValues(alpha: 0.95),
+              scrim.withValues(alpha: 0)
+            ],
           ),
-          padding: const EdgeInsets.symmetric(
-            horizontal: AppTokens.spaceMd,
-            vertical: AppTokens.spaceSm,
-          ),
+        ),
+        padding: const EdgeInsets.symmetric(
+          horizontal: AppTokens.spaceMd,
+          vertical: AppTokens.spaceSm,
+        ),
+        child: SafeArea(
+          bottom: false,
           child: Row(
             children: <Widget>[
               IconButton(
@@ -6256,27 +6261,29 @@ class _ComicReaderScreenState extends State<ComicReaderScreen>
   Widget _buildBottomBar(AppLocalizations l10n) {
     // 控制栏底色跟随应用主题（暗色即深色），保证图标文字对比度（见 _buildTopBar）。
     final Color scrim = Theme.of(context).colorScheme.surface;
-    return SafeArea(
-      top: false,
-      child: MouseRegion(
-        // 桌面端控件光标反馈：控制栏按钮 hover 显示 click 光标。
-        cursor: SystemMouseCursors.click,
-        child: Container(
-          key: _bottomBarKey,
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.bottomCenter,
-              end: Alignment.topCenter,
-              colors: <Color>[
-                scrim.withValues(alpha: 0.95),
-                scrim.withValues(alpha: 0),
-              ],
-            ),
+    // 渐变背景容器铺到屏幕最底端（含导航条区），SafeArea 只包住 Column 内容
+    // 负责避让安全区（与 _buildTopBar 同款修法）。top:false——底栏不含状态栏高度。
+    return MouseRegion(
+      // 桌面端控件光标反馈：控制栏按钮 hover 显示 click 光标。
+      cursor: SystemMouseCursors.click,
+      child: Container(
+        key: _bottomBarKey,
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.bottomCenter,
+            end: Alignment.topCenter,
+            colors: <Color>[
+              scrim.withValues(alpha: 0.95),
+              scrim.withValues(alpha: 0),
+            ],
           ),
-          padding: const EdgeInsets.symmetric(
-            horizontal: AppTokens.spaceMd,
-            vertical: AppTokens.spaceSm,
-          ),
+        ),
+        padding: const EdgeInsets.symmetric(
+          horizontal: AppTokens.spaceMd,
+          vertical: AppTokens.spaceSm,
+        ),
+        child: SafeArea(
+          top: false,
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: <Widget>[

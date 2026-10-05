@@ -5261,22 +5261,25 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
                 ? _source!.site.baseUrl + chapterUrl
                 : chapterUrl)
             : null;
-    return SafeArea(
-      child: Container(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: <Color>[
-              bg.withValues(alpha: 0.95),
-              bg.withValues(alpha: 0)
-            ],
-          ),
+    // 渐变背景容器铺到屏幕最顶端（含状态栏 / 刘海区），SafeArea 只包住 Row 内容
+    // 负责避让安全区（与漫画阅读器 _buildTopBar 同款修法）。
+    return Container(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: <Color>[
+            bg.withValues(alpha: 0.95),
+            bg.withValues(alpha: 0)
+          ],
         ),
-        padding: const EdgeInsets.symmetric(
-          horizontal: AppTokens.spaceMd,
-          vertical: AppTokens.spaceSm,
-        ),
+      ),
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppTokens.spaceMd,
+        vertical: AppTokens.spaceSm,
+      ),
+      child: SafeArea(
+        bottom: false,
         child: Row(
           children: <Widget>[
             IconButton(
@@ -5551,23 +5554,25 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
 
   Widget _buildBottomBar(AppLocalizations l10n, Color bg,
       {bool ttsActive = false}) {
-    return SafeArea(
-      top: false,
-      child: Container(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.bottomCenter,
-            end: Alignment.topCenter,
-            colors: <Color>[
-              bg.withValues(alpha: 0.95),
-              bg.withValues(alpha: 0)
-            ],
-          ),
+    // 渐变背景容器铺到屏幕最底端（含导航条区），SafeArea 只包住 Column 内容
+    // 负责避让安全区（与漫画阅读器同款修法）。top:false——底栏不含状态栏高度。
+    return Container(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.bottomCenter,
+          end: Alignment.topCenter,
+          colors: <Color>[
+            bg.withValues(alpha: 0.95),
+            bg.withValues(alpha: 0)
+          ],
         ),
-        padding: const EdgeInsets.symmetric(
-          horizontal: AppTokens.spaceMd,
-          vertical: AppTokens.spaceSm,
-        ),
+      ),
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppTokens.spaceMd,
+        vertical: AppTokens.spaceSm,
+      ),
+      child: SafeArea(
+        top: false,
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: <Widget>[
