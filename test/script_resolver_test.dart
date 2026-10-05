@@ -237,7 +237,12 @@ void main() {
       expect(captured['category'], 'kr');
     });
 
-    test('useWebview short-circuit: resolve throws WebViewHtmlRequest without executing script', () async {
+    test('useWebview 脚本源直接执行脚本：不再抛 WebViewHtmlRequest', () async {
+      // 旧行为（已移除）：对 useWebview 源无条件抛 WebViewHtmlRequest 强制
+      // WebView 渲染——但脚本源通常自行 ctx.http 抓取、不消费渲染 HTML，
+      // WebView 毫无意义且反爬站点上 InAppWebView 数秒后 native 崩溃。
+      // 现契约（resolve() 注释）：脚本直接执行；需要渲染后 HTML 的声明式源
+      // 由 ResolverRegistry 派发 WebViewResolver，不经过本解析器。
       final useWebviewSource = PluginConfig.fromJson(<String, dynamic>{
         'id': 'uwv', 'name': 'uwv', 'type': 'mangaSource',
         'site': {'baseUrl': 'https://x.com'},
@@ -254,15 +259,18 @@ void main() {
       final resolver = ScriptResolver(
         engineFactory: (_) {
           factoryCalled = true;
-          return FakeJsEngine(<dynamic>[]);
+          return FakeJsEngine(<dynamic>[
+            {'id': '1', 'title': 'Direct'},
+          ]);
         },
       );
-      await expectLater(
-        resolver.resolve(useWebviewSource, 'latest'),
-        throwsA(isA<WebViewHtmlRequest>()),
-      );
-      // Engine factory must NOT be called (script must NOT execute).
-      expect(factoryCalled, isFalse);
+      final items = await resolver.resolve(useWebviewSource, 'latest')
+          as List<MediaItem>;
+      // 脚本必须被执行（short-circuit 已移除），且产出正常返回。
+      expect(factoryCalled, isTrue,
+          reason: 'short-circuit 移除后引擎工厂必须被调用');
+      expect(items, hasLength(1));
+      expect(items.first.title, 'Direct');
     });
 
     test('预取撞验证墙 + 脚本空产出 → 重抛 VerificationRequiredException（真机 /watch 403 案）', () async {
