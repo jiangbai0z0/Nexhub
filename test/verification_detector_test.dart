@@ -272,5 +272,72 @@ void main() {
         isFalse,
       );
     });
+
+    // ---- 验证码「组件」≠ 挑战页（hanime1.me 登录态 watch 页回归）----
+
+    test('hanime 登录态 watch 大页（评论区 hCaptcha 组件）不得误判为验证页', () {
+      // 真机实锤（2026-10-05）：登录态 GET /watch?v=408492 → 200/190004B 正常
+      // 内容页，评论区挂 hCaptcha 发帖验证组件（data-sitekey×2）。旧逻辑把
+      // data-sitekey 当主动挑战标记 → ScriptResolver 预取被判验证墙
+      // rawLength=0 → video/episodes 解析不出（「详情页解析不完全，视频解析
+      // 不了」）。组件挂在正常大页 ≠ 页面是挑战页。
+      const pageHead = '<!DOCTYPE html><html><head>'
+          '<title>櫻春女學院的男優 - Hanime1.me</title></head><body>';
+      const commentCaptcha = '<div style="margin-bottom: 10px;">'
+          '<div style="display: inline-block; vertical-align: top;" '
+          'class="h-captcha" data-sitekey='
+          '"5959a57c-915a-48e8-8d35-48155f9b8529" data-theme="dark"></div>'
+          '</div>';
+      // 前置断言：体量对齐真实 190KB 大页（远超 8KB 挑战壳闸门）。
+      final body = StringBuffer(pageHead)
+        ..write('<div class="video-wrapper"><video id="player"></video></div>');
+      for (var i = 0; i < 300; i++) {
+        body.write('<a href="/watch?v=4$i">相关影片标题占位 $i</a>');
+      }
+      body.write(commentCaptcha);
+      body.write('<div class="h-captcha" data-sitekey='
+          '"5959a57c-915a-48e8-8d35-48155f9b8529"></div></body></html>');
+      expect(body.length, greaterThan(8192));
+      expect(
+        VerificationDetector.isVerificationRequired(
+          statusCode: 200,
+          body: body.toString(),
+        ),
+        isFalse,
+      );
+    });
+
+    test('g-recaptcha/turnstile 组件挂在正常大页同样放行', () {
+      final body = StringBuffer(
+          '<html><head><title>评论区</title></head><body>');
+          for (var i = 0; i < 300; i++) {
+            body.write('<a href="/post/$i">帖子标题占位 $i</a>');
+          }
+          body.write('<div class="g-recaptcha" data-sitekey="6LeX"></div>');
+          body.write('<div class="cf-turnstile" data-sitekey="0x4A"></div>');
+          body.write('</body></html>');
+          expect(body.length, greaterThan(8192));
+          expect(
+            VerificationDetector.isVerificationRequired(
+              statusCode: 200,
+              body: body.toString(),
+            ),
+            isFalse,
+          );
+    });
+
+    test('整页极小的 recaptcha 挑战壳仍判验证（组件+极短壳路径）', () {
+      // 组件降级为「被动标记」语义后，真挑战壳（整页就是一个验证表单，<8KB）
+      // 走「被动标记 + 极短壳」路径依旧拦截，不会漏判。
+      const shell = '<html><head><title>One more step</title></head><body>'
+          '<form action="/challenge"><div class="g-recaptcha" '
+          'data-sitekey="6LeX"></div><input type="submit" value="Continue">'
+          '</form></body></html>';
+      expect(shell.trim().length, lessThanOrEqualTo(8192));
+      expect(
+        VerificationDetector.isVerificationRequired(statusCode: 200, body: shell),
+        isTrue,
+      );
+    });
   });
 }

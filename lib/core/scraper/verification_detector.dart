@@ -85,15 +85,12 @@ class VerificationDetector {
   static const List<String> _activeChallengeMarkers = <String>[
     '__cf_chl',
     'cf-chl-',
-    'g-recaptcha',
-    'turnstile',
     'input[type=password]',
     '/_guard/html.js',
     '/_guard/slide.js',
     'slider_html',
     'challenge-form',
     'challenge-stage',
-    'data-sitekey',
     // Cloudflare「Managed Challenge / 5 秒盾 / Just a moment」等待页特征：
     // 这类页以 200 返回、body 含下方字符串，但站点正常内容绝不会出现，故作为
     // 主动挑战标记直接判验证页（对齐 Han1mePlus 的 isCloudflareResponse 判定）。
@@ -120,6 +117,18 @@ class VerificationDetector {
   static const List<String> _passiveCfMarkers = <String>[
     'cf-ray',
     'challenge-platform',
+  ];
+
+  /// 验证码「组件」标记（CAPTCHA/滑块挂件）。组件既可出现在真挑战页（整页就是
+  /// 一个验证表单，壳体极小），也可以作为正常功能挂在内容页上——hanime1.me
+  /// 登录态 watch 页（190KB）评论区就有 hCaptcha 发帖验证组件，真机曾因该页
+  /// 命中 data-sitekey 被判「验证墙」→ 脚本预取 rawLength=0 → video/episodes
+  /// 解析不出。组件 ≠ 挑战：与被动 CF 标记同语义——仅「极短壳」时结合判定，
+  /// 正常大页放行（真实挑战页 g-recaptcha/turnstile 整页壳都远小于 8KB）。
+  static const List<String> _captchaWidgetMarkers = <String>[
+    'g-recaptcha',
+    'turnstile',
+    'data-sitekey',
   ];
 
   /// WAF/反爬「拦截应答」的精确 body 特征：整段 body 去掉首尾空白后**全字匹配**
@@ -224,7 +233,8 @@ class VerificationDetector {
 
   static bool _hasPassiveCf(String body) {
     final lower = body.toLowerCase();
-    return _passiveCfMarkers.any((f) => lower.contains(f.toLowerCase()));
+    return _passiveCfMarkers.any((f) => lower.contains(f.toLowerCase())) ||
+        _captchaWidgetMarkers.any((f) => lower.contains(f.toLowerCase()));
   }
 
   /// 真实 CF 挑战页特征：体积极小（仅为「等待 5 秒 / 重定向」壳，通常 < 8KB），
