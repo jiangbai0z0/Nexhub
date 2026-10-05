@@ -499,7 +499,7 @@ Below is the source-authoring tutorial tiered by difficulty, consistent with the
 | `site` | object | Site info (**required**): see 4.5.1 |
 | `parser.type` | string | Top-level parse engine: `builtin` / `hybrid` / `script` |
 | `parser.overrides` | object | Per-API parse overrides, each `{ type, script?, function? }` |
-| `routes` | object | Endpoint set, each `{ url, method?, responseType?, headers?, params?, parser? }`; a plain string `"url"` is also accepted |
+| `routes` | object | Endpoint set, each `{ url, method?, responseType?, headers?, params?, body?, parser? }` (body = POST/PUT request body); path placeholders support an optional form `{k?}` (included when matched, dropped otherwise); a plain string `"url"` is also accepted |
 | `selectors` | object | Declarative extraction rules (JSONPath / CSS / XPath per overrides.type) |
 | `category` | object | Category config: `dynamicCategories` / `categories` / `categoryEntries` (static category table) |
 | `homeSections` | array | Optional; custom home sections, each `{ id, title, route, params?, style?, limit?, more? }`; style: `grid` / `rank` / `scroll` / `schedule` |

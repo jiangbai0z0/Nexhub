@@ -499,7 +499,7 @@ NexHub 的解析能力完全由源 JSON 驱动。一个源是一个 JSON 文件�
 | `site` | object | 站点信息（**必填**）：见 4.5.1 |
 | `parser.type` | string | 顶层解析引擎：`builtin` / `hybrid` / `script` |
 | `parser.overrides` | object | 按 API 分组的解析覆盖，每项 `{ type, script?, function? }` |
-| `routes` | object | 端点集合，每项 `{ url, method?, responseType?, headers?, params?, parser? }`；也支持字符串写法 `"url"` |
+| `routes` | object | 端点集合，每项 `{ url, method?, responseType?, headers?, params?, body?, parser? }`（body 为 POST/PUT 请求体）；路径占位符支持可选写法 `{k?}`（命中取该段、未命中省去整段）；也支持字符串写法 `"url"` |
 | `selectors` | object | 声明式抽取规则（按 overrides.type 选用 JSONPath / CSS / XPath） |
 | `category` | object | 分类配置：`dynamicCategories` / `categories` / `categoryEntries`（静态分类表） |
 | `homeSections` | array | 可选；自定义首页板块，每项 `{ id, title, route, params?, style?, limit?, more? }`，style 取 `grid` / `rank` / `scroll` / `schedule` |

@@ -1,6 +1,17 @@
 [
 {
-  "id": "v3.0.0-beta.4-announce",
+  "id": "v3.0.0-announce",
+  "date": "2026-10-05",
+  "title": "NexHub 3.0.0 正式版",
+  "titleEn": "NexHub 3.0.0 (stable release)",
+  "body": "NexHub 3.0.0 正式版来了！这是 3.0.0 测试线的稳定收口，基础功能完整、可安全升级。一次性带来全新 Material 3 视觉体系、媒体服务器（Emby / Jellyfin）、ECH 加密握手（Android 三架构 + Windows 桌面端生效）、源编辑五页签重构、三大阅读器增强与漫画动态效果；本轮还大批量加固了网络连通性（请求头保真规避 WAF 指纹、403 换 IP 丢连接池、SNI 清空不再被丢弃、CF 边缘限制修复）与抓取解析健壮性，并补上一批源回归测试。从 2.0.3 升级的用户将获得完整 3.0.0 能力。无破坏性数据变更，沿用同一签名密钥可直接覆盖安装。",
+  "bodyEn": "NexHub 3.0.0 (stable) is here! This is the stabilized endpoint of the 3.0.0 test line — solid and safe to upgrade. It lands the full Material 3 design system, media servers (Emby / Jellyfin), ECH encrypted handshake (shipped on Android three ABIs + Windows desktop), the five-tab source editor rewrite, three-reader enhancements and comic dynamic effects; this round also hardens connectivity in bulk (header-case preservation against WAF fingerprinting, connection-pool drop on 403 IP-rotation, SNI-clear no longer silently dropped, Cloudflare edge-limit fixes) and parser robustness, plus a batch of source regression tests. Users upgrading from 2.0.3 get the complete 3.0.0 capability set. No breaking data changes — same signing key, just overwrite-install.",
+  "url": "",
+  "urlText": "",
+  "urlTextEn": ""
+},
+  {
+    "id": "v3.0.0-beta.4-announce",
   "date": "2026-10-04",
   "title": "NexHub 3.0.0-beta.4 预发布测试版",
   "titleEn": "NexHub 3.0.0-beta.4 (pre-release beta)",
