@@ -79,11 +79,21 @@ class BuiltinResolver implements SourceResolver {
     final ua = source.antiHotlinking.userAgent;
     final Map<String, String>? ahHeaders =
         (ua != null && ua.isNotEmpty) ? <String, String>{'User-Agent': ua} : null;
-    // 通用 POST 表单路由：源可声明 `method: "post"`，此时把已解析 URL 的查询串
-    // 拆成 application/x-www-form-urlencoded 表单体发 POST（如 MacCMS 模板的
+    // 通用请求头合并：站点级（site.headers）与路由级（route.headers）声明头
+    // 显式并入（路由级优先）。供 API 型源携带鉴权头（如 Supabase PostgREST /
+    // Edge Functions 的 apikey），防盗链 UA 仅在未被显式声明时兜底。
+    Map<String, String> effectiveHeaders() => <String, String>{
+          ...?ahHeaders,
+          ...?source.site.headers,
+          ...?source.routes[apiName]?.headers,
+        };
+    // 通用 POST 路由：源可声明 `method: "post"`，或声明 `body` 模板（隐含
+    // post）。未声明 body 时沿用旧机制：把已解析 URL 的查询串拆成
+    // application/x-www-form-urlencoded 表单体发 POST（如 MacCMS 模板的
     // /ds_api/vod 接口只收 POST 表单）。机制对所有源通用，不写死任何站点。
-    final isPost =
-        (source.routes[apiName]?.method.toLowerCase() ?? 'get') == 'post';
+    final routeCfg = source.routes[apiName];
+    final isPost = (routeCfg?.method.toLowerCase() ?? 'get') == 'post' ||
+        (routeCfg?.body?.isNotEmpty ?? false);
     if (rt == 'json') {
       dynamic result;
       try {
@@ -94,21 +104,39 @@ class BuiltinResolver implements SourceResolver {
             // 避免周期表某些星期因单页采样偏差长期为空。
             json = await _fetchWeekJson(url, referer, ahHeaders, net: net);
           } else {
-            final split = _splitFormUrl(url);
-            json = await HttpFetcher.instance.postJson(
-              split.$1,
-              headers: <String, String>{
-                'Content-Type': 'application/x-www-form-urlencoded',
-                ...?ahHeaders,
-              },
-              data: split.$2,
-              referer: referer,
-              net: net,
-            );
+            final bodyTpl = routeCfg?.body;
+            final headers = effectiveHeaders();
+            if (bodyTpl != null && bodyTpl.isNotEmpty) {
+              // 通用：路由声明 body 模板 → 占位符直替后原样作为请求体发送
+              // （JSON API 源；Content-Type 由源 headers 声明，默认 json）。
+              final data = PluginConfig.interpolateRouteBody(bodyTpl, vars);
+              json = await HttpFetcher.instance.postJson(
+                url,
+                headers: <String, String>{
+                  'Content-Type': 'application/json',
+                  ...headers,
+                },
+                data: data,
+                referer: referer,
+                net: net,
+              );
+            } else {
+              final split = _splitFormUrl(url);
+              json = await HttpFetcher.instance.postJson(
+                split.$1,
+                headers: <String, String>{
+                  'Content-Type': 'application/x-www-form-urlencoded',
+                  ...headers,
+                },
+                data: split.$2,
+                referer: referer,
+                net: net,
+              );
+            }
           }
         } else {
           json = await HttpFetcher.instance
-              .getJson(url, referer: referer, headers: ahHeaders, net: net);
+              .getJson(url, referer: referer, headers: effectiveHeaders(), net: net);
         }
         result = _withDetailUrlFallback(
           _parseJson(source, apiName, json, url, baseUrl: baseUrl ?? url),
@@ -132,14 +160,29 @@ class BuiltinResolver implements SourceResolver {
     }
     final String html;
     if (isPost) {
-      final split = _splitFormUrl(url);
-      html = await HttpFetcher.instance.postForm(
-        split.$1,
-        data: split.$3,
-        referer: referer,
-        headers: ahHeaders,
-        net: net,
-      );
+      final bodyTpl = routeCfg?.body;
+      final headers = effectiveHeaders();
+      if (bodyTpl != null && bodyTpl.isNotEmpty) {
+        html = await HttpFetcher.instance.post(
+          url,
+          headers: <String, String>{
+            'Content-Type': 'application/json',
+            ...headers,
+          },
+          data: PluginConfig.interpolateRouteBody(bodyTpl, vars),
+          referer: referer,
+          net: net,
+        );
+      } else {
+        final split = _splitFormUrl(url);
+        html = await HttpFetcher.instance.postForm(
+          split.$1,
+          data: split.$3,
+          referer: referer,
+          headers: headers,
+          net: net,
+        );
+      }
     } else {
       html = await HttpFetcher.instance
           .getHtml(url, referer: referer, headers: ahHeaders, net: net);

@@ -347,6 +347,11 @@ class RouteConfig {
   final String method;
   final Map<String, String>? headers;
   final Map<String, String>? params;
+
+  /// POST 请求体模板（声明后 method 视为 post）。占位符 `{var}` 同 URL 规则
+  /// 直替（不做 URL 编码），供 JSON API 源声明 `{"episode_id":{url}}` 之类的
+  /// JSON 体；未声明时 POST 沿用旧机制（URL 查询串拆 form 体）。
+  final String? body;
   final String? responseType; // json | html
   final ParserOverride? parser; // 路由级解析覆盖
 
@@ -355,6 +360,7 @@ class RouteConfig {
     this.method = 'get',
     this.headers,
     this.params,
+    this.body,
     this.responseType,
     this.parser,
   });
@@ -374,6 +380,7 @@ class RouteConfig {
       params: (map['params'] as Map?)?.map(
         (k, v) => MapEntry(k.toString(), v.toString()),
       ),
+      body: map['body'] as String?,
       responseType: map['responseType'] as String?,
       parser: map['parser'] == null
           ? null
@@ -386,6 +393,7 @@ class RouteConfig {
         'method': method,
         if (headers != null) 'headers': headers,
         if (params != null) 'params': params,
+        if (body != null) 'body': body,
         if (responseType != null) 'responseType': responseType,
         if (parser != null) 'parser': parser!.toJson(),
       };
@@ -1523,8 +1531,37 @@ class PluginConfig {
       } else {
         value = v;
       }
-      url = url.replaceAll('{$k}', value);
+      // 「显式可选整段参数」：占位符带 `?` 后缀（`&meta_tags={class?}`，参数名
+      // 与占位符名可不同），值为空时整段移除（`?` 首参形态移除后由 cleanup
+      // 回收悬空符）。用于 PostgREST 等严格 API——空值参数 `k=` 会被判 400，
+      // 而整段缺席即「不过滤」。不带 `?` 的普通 `{k}` 空值仍按旧语义保留
+      // `k=`（MacCMS 等模板依赖空值参数在线）。值含中文时走 encodeComponent，
+      // 恰好把值内花括号一并编码（`cs.{奇幻}` → `cs.%7B…%7D`），不会与占位符
+      // cleanup 冲突，也不会残留字面 `{}`。
+      if (v.isEmpty) {
+        final optional = RegExp(
+            '[&?]([A-Za-z0-9_%\\-\\[\\]]+)=\\{${RegExp.escape(k)}\\?\\}');
+        final m = optional.firstMatch(url);
+        if (m != null) {
+          url = url.replaceRange(
+            m.start,
+            m.end,
+            m.group(0)!.startsWith('?') ? '?' : '',
+          );
+          return;
+        }
+      }
+      url = url
+          .replaceAll('{$k}', value)
+          .replaceAll('{$k?}', value);
     });
+    // 可选占位符兜底：vars 完全缺失该键（源未声明 defaults 且用户未碰筛选）
+    // 时上方循环不会访问它，`{k?}` 原样残留——整段移除对应可选参数，
+    // 避免 cleanup 只清占位符却留下 `k=` 空段（PostgREST 400）。
+    url = url.replaceAll(
+        RegExp(r'&[A-Za-z0-9_%\-\[\]]+=\{[A-Za-z_][A-Za-z0-9_]*\?\}'), '');
+    url = url.replaceAll(
+        RegExp(r'\?[A-Za-z0-9_%\-\[\]]+=\{[A-Za-z_][A-Za-z0-9_]*\?\}'), '?');
     // 占位符数值运算：`{page-1}` / `{page+1}` / `{page*30-30}` 这类写法。
     // 用途一：相当多站点的分页参数从 0 开始（第 1 页是 `page=0`），而引擎统一
     // 从 1 开始计数。没有偏移语法时源只能自造变量名（引擎不认）或干脆错位
@@ -1593,6 +1630,20 @@ class PluginConfig {
     url = url.replaceAll('?&', '?'); // 上一步替换产生的悬空连接符
     debugPrint('[PluginConfig] resolveRouteUrl: apiName=$apiName finalUrl=$url');
     return url;
+  }
+
+  /// 路由 body 模板占位符直替：`{var}` → 原始值（不做 URL 编码——body 不是
+  /// URL）。body 本身是花括号密集的 JSON，清理未命中占位符时**不能**沿用
+  /// URL 的 `\{[^}]*\}` 贪婪清理（会把整个 JSON 体当占位符吞掉），只清理
+  /// 「裸单词占位符」`\{[A-Za-z_]\w*\}`——JSON 键/值永远带引号，不会误伤。
+  /// 供 BuiltinResolver 构造 POST 请求体（路由声明 `body` 的 JSON API 源，
+  /// 如 `{"action":"fallback","episode_id":{url}}`）。
+  static String interpolateRouteBody(String template, Map<String, String> vars) {
+    var body = template;
+    vars.forEach((k, v) {
+      body = body.replaceAll('{$k}', v);
+    });
+    return body.replaceAll(RegExp(r'\{[A-Za-z_][A-Za-z0-9_]*\}'), '');
   }
 
   /// 处理 `{name±N}` / `{name*N±M}` 形式的占位符数值运算（如 `{page-1}`、
