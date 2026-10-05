@@ -891,8 +891,8 @@ class _ContentDetailScreenState extends State<ContentDetailScreen> {
 
   /// 统一搜索：标签 / 作者 / 导演 / 主演 / 作品名 走同一入口。
   ///
-  /// 默认以单源模式打开并预选当前源（item 5：详情页跳转搜索默认只搜该源），
-  /// 用户仍可手动切回聚合全部源。
+  /// 默认仅勾选当前源打开（详情页跳转搜索默认只搜该源），
+  /// 用户仍可在搜索页勾选更多源一起搜。
   void _openUnifiedSearch(String query, {String? field, String? extractedUrl}) {
     final String q = query.trim();
     if (q.isEmpty) return;

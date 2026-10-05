@@ -1,6 +1,9 @@
 /// 模块源搜索页（文档 搜索统一）。
 ///
-/// 跨全部活跃源搜索，按 [SourceType] 过滤。
+/// 搜索不区分「聚合/单源」两种模式：以勾选源为准，勾选了哪些源就搜哪些源
+/// （详情页跳转默认只勾选当前源；常规进入默认全选）。各勾选源并发检索，
+/// 结果逐源到达即展示，不再等全部源搜完才显示。
+/// 影视模块的媒体服务器作为一种可选源并列在源勾选条里，勾选才参与搜索。
 /// 小说/媒体/漫画三模块共用，布局偏好与书架/设置页共用 [LayoutSettingsStore] 单例。
 /// 输入防抖 300ms，避免每个按键都触发跨源搜索请求。
 library;
@@ -40,8 +43,7 @@ import '../../../core/widgets/highlight_text.dart';
 import '../../../core/widgets/module_search_screen.dart';
 import '../../features/verification/presentation/verification_handler.dart';
 
-/// 搜索范围：聚合（该模块全部源）或单源（指定一个源）。
-enum _SearchScope { aggregate, single }
+/// 搜索范围枚举已移除：搜索一律按源勾选集执行，不再区分聚合/单源。
 
 class ModuleSourceSearchScreen extends StatefulWidget {
   final SourceType sourceType;
@@ -52,9 +54,9 @@ class ModuleSourceSearchScreen extends StatefulWidget {
   /// 直达地址：调用方已取得的真实页面链接（如详情页抓取到的作者/标签落地页），
   /// 非空时进入直达模式，直接用它检索并信任返回结果。
   final String? extractedUrl;
-  /// 进入时默认以单源模式打开（如从详情页跳转搜索，默认只搜当前这个源）。
+  /// 进入时默认只勾选该源（如从详情页跳转搜索，默认只搜当前这个源）。
   final bool startSingle;
-  /// 单源模式预选中的源 id（配合 [startSingle] 使用）。
+  /// 配合 [startSingle] 预勾选的源 id。
   final String? initialSourceId;
   final void Function(MediaItem item, String? heroTag) onItemTap;
 
@@ -78,39 +80,47 @@ class ModuleSourceSearchScreen extends StatefulWidget {
 class _ModuleSourceSearchScreenState extends State<ModuleSourceSearchScreen> {
   final TextEditingController _controller = TextEditingController();
   bool _grid = true;
+  /// 网络源搜索进行中：结果逐源到达即插入列表，全部源落定后置 false。
   bool _loading = false;
   List<MediaItem> _results = const <MediaItem>[];
-  String? _extractedUrl;
+  /// 已展示结果的 id 集合：逐源追加/翻页合并时按 id 去重。
+  final Set<String> _resultIds = <String>{};
   Timer? _debounce;
-  /// 源选择条（单源模式）滚动控制器，用于把预选源 chip 滚入可视区域（项 6）。
+  /// 源勾选条滚动控制器，桌面端滚轮/拖动可横滚。
   final ScrollController _sourceScrollController = ScrollController();
-  /// 预选源 chip 的 key，供 [Scrollable.ensureVisible] 定位。
+  /// 详情页预勾选源 chip 的 key，供 [Scrollable.ensureVisible] 定位。
   final GlobalKey _selectedSourceKey = GlobalKey();
 
-  /// 搜索范围：聚合全部源 / 单源。
-  _SearchScope _scope = _SearchScope.aggregate;
-  /// 单源模式下选中的源 id（null 表示未选）。
-  String? _selectedSourceId;
+  /// 勾选参与搜索的源 id 集合（多选；空集=不搜网络源）。
+  final Set<String> _checkedSourceIds = <String>{};
+  /// 勾选集是否已按入口初始化（详情页单源 / 常规全选），只初始化一次。
+  bool _selectionInitialized = false;
+  /// 媒体服务器是否参与本次搜索（仅影视模块；作为可选源与普通源并列勾选）。
+  bool _mediaServerChecked = false;
   /// 进度计算缓存（按 "id#list" / "id#showProgress" 维度），避免列表/网格重复计算。
   final Map<String, Future<double?>> _progressFutures =
       <String, Future<double?>>{};
   /// 当前字段筛选（null=关键词；tags/author/director/actors/title）。
   String? _searchField;
-  /// 单源模式但未选源时的提示标记。
+  /// 未勾选任何源时的提示标记。
   bool _needSource = false;
   /// 已加载页码（从 1 开始）。源路由声明了 `{page}` 时滚动触底自动翻页，
   /// 修复「搜索不全（还有下一页）」——此前搜索恒定只取第 1 页。
   int _page = 1;
-  /// 是否可能还有下一页（上一页非空即认为可能有）。
-  bool _hasMore = false;
+  /// 仍可能有下一页的源 id 集合（非空才展示/触发「加载更多」）。
+  final Set<String> _sourcesWithMore = <String>{};
   /// 追加加载中标记（避免滚动回调重复触发）。
   bool _loadingMore = false;
+  /// 搜索代际：每次新搜索递增；过期搜索的迟到结果按代际丢弃，防止串台。
+  int _searchGen = 0;
   /// 小说模块繁简转换：按全局阅读偏好的转换方向，仅作用于
   /// 搜索结果的标题/作者展示与本地匹配归一，不改写入库/收藏的原始数据。
   ChineseConvertMode _novelConvertMode = ChineseConvertMode.none;
   /// 单源搜索简繁兜底（扩展）：首搜为空、用简↔繁互转关键词命中后，
   /// 记录实际生效关键词，后续翻页沿用，避免「下一页又回到原词导致结果错位」。
   String? _networkKeyword;
+  /// 验证弹窗串行链：并发多源搜索同时命中验证时排队逐个处理，避免弹窗叠加。
+  Future<void> _verificationChain = Future<void>.value();
 
   @override
   void initState() {
@@ -137,14 +147,10 @@ class _ModuleSourceSearchScreenState extends State<ModuleSourceSearchScreen> {
       });
     }
     // 直达模式：调用方已提供真实页面地址（如详情页抓取到的作者/标签落地页），
-    // 直接带入搜索，跳过关键词输入与客户端收窄（服务端已按该页过滤）。
-    _extractedUrl = widget.extractedUrl;
-    // 详情页跳转搜索：默认以单源模式打开并预选当前源（item 5）。
-    if (widget.startSingle) {
-      _scope = _SearchScope.single;
-      _selectedSourceId = widget.initialSourceId;
-    }
-    // 从详情页进入单源搜索：预选源 chip 自动滚入可视区域（项 6）。
+    // 直接带入搜索，跳过关键词输入与客户端收窄（服务端已按该页过滤；
+    // 见 _fetchSourcePage 内对 widget.extractedUrl 的使用）。
+    // 详情页跳转搜索：默认只勾选当前源（勾选集初始化见 _ensureSelectionInit）。
+    // 从详情页进入搜索：预勾选源 chip 自动滚入可视区域。
     if (widget.startSingle && widget.initialSourceId != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
@@ -196,6 +202,27 @@ class _ModuleSourceSearchScreenState extends State<ModuleSourceSearchScreen> {
     super.dispose();
   }
 
+  /// 按入口初始化源勾选集（只执行一次）：
+  /// - 详情页跳转（[ModuleSourceSearchScreen.startSingle]）：仅勾选预选源，
+  ///   媒体服务器不参与——修复「单源搜索也弹媒体服务器」；
+  /// - 常规进入：默认全选（等价原聚合搜索口径），影视模块媒体服务器默认参与，
+  ///   用户可随时取消勾选。
+  void _ensureSelectionInit(List<PluginConfig> sources) {
+    if (_selectionInitialized) return;
+    _selectionInitialized = true;
+    if (widget.startSingle && widget.initialSourceId != null) {
+      _checkedSourceIds
+        ..clear()
+        ..add(widget.initialSourceId!);
+      _mediaServerChecked = false;
+      return;
+    }
+    _checkedSourceIds
+      ..clear()
+      ..addAll(sources.map((s) => s.id));
+    _mediaServerChecked = widget.sourceType == SourceType.animeSource;
+  }
+
   Future<void> _doSearch(String query) async {
     _debounce?.cancel();
     final trimmed = query.trim();
@@ -203,8 +230,10 @@ class _ModuleSourceSearchScreenState extends State<ModuleSourceSearchScreen> {
       if (mounted) {
         setState(() {
           _results = const <MediaItem>[];
+          _resultIds.clear();
           _loading = false;
           _needSource = false;
+          _sourcesWithMore.clear();
         });
       }
       return;
@@ -212,105 +241,142 @@ class _ModuleSourceSearchScreenState extends State<ModuleSourceSearchScreen> {
 
     _debounce = Timer(const Duration(milliseconds: 300), () async {
       if (!mounted) return;
-      // 单源模式但未选源：提示选择，不发起请求。
-      if (_scope == _SearchScope.single && _selectedSourceId == null) {
+      final sourceRepo = context.read<SourceRepository>();
+      final sources = sourceRepo.byType(widget.sourceType);
+      _ensureSelectionInit(sources);
+      final checked =
+          sources.where((s) => _checkedSourceIds.contains(s.id)).toList();
+      final bool mediaServerActive =
+          widget.sourceType == SourceType.animeSource && _mediaServerChecked;
+      // 一个源都没勾选（且媒体服务器未勾选）：提示先勾选，不发起请求。
+      if (checked.isEmpty && !mediaServerActive) {
         if (mounted) {
           setState(() {
             _results = const <MediaItem>[];
+            _resultIds.clear();
             _loading = false;
             _needSource = true;
+            _sourcesWithMore.clear();
           });
         }
         return;
       }
+      final int gen = ++_searchGen;
+      // 本地内容（导入 + 已下载）即时匹配，先入列表；网络结果由各源
+      // 并发检索、先完成先并入（_runSourceSearch）。
+      final localResults = _searchLocalContent(trimmed);
       setState(() {
-        _loading = true;
+        _loading = checked.isNotEmpty;
         _needSource = false;
         _page = 1;
-        _hasMore = false;
+        _networkKeyword = null;
+        _sourcesWithMore.clear();
+        _results = List<MediaItem>.of(localResults);
+        _resultIds
+          ..clear()
+          ..addAll(localResults.map((e) => e.id));
       });
-
-      try {
-        List<MediaItem> networkResults = await _fetchPage(trimmed, 1);
-        // 简繁兜底（扩展）：单源搜索首次结果为空时，用简↔繁互转后的
-        // 关键词向同一源再请求一次；命中则后续翻页也沿用转换后关键词。
-        if (_scope == _SearchScope.single && networkResults.isEmpty) {
-          final alt = _alternativeChineseKeyword(trimmed);
-          if (alt != null && alt != trimmed) {
-            final retried = await _fetchPage(alt, 1);
-            if (retried.isNotEmpty) {
-              networkResults = retried;
-              _networkKeyword = alt;
-            }
-          }
-        }
-        // 本地内容（导入 + 已下载）与网络结果同列展示：先匹配本地，
-        // 命中条目携带本地 extra（localPath/filePaths），点击由调用方走本地打开。
-        // 聚合 / 单源两种模式均启用（单源也支持本地内容的双向简繁归一匹配）。
-        final localResults = _searchLocalContent(trimmed);
-
-        if (mounted) {
-          setState(() {
-            _results = <MediaItem>[...localResults, ...networkResults];
-            _loading = false;
-            // 上一页非空才可能有下一页；具体是否声明 {page} 由 _fetchPage 判定。
-            _hasMore = networkResults.isNotEmpty && _anySourcePaged();
-          });
-        }
-      } catch (_) {
-        if (mounted) setState(() => _loading = false);
-      }
+      if (checked.isEmpty) return;
+      // 简繁兜底仅在勾选单个源时启用（与原单源搜索口径一致）。
+      final bool cnFallback = checked.length == 1;
+      await Future.wait(<Future<int>>[
+        for (final source in checked)
+          _runSourceSearch(
+            source,
+            trimmed,
+            gen,
+            page: 1,
+            cnFallback: cnFallback,
+          ),
+      ]);
+      if (!mounted || gen != _searchGen) return;
+      setState(() => _loading = false);
     });
   }
 
-  /// 是否有参与搜索的源在其搜索路由 URL 中声明了 `{page}` 占位符。
-  /// 只有声明了才展示/触发「加载更多」，避免对无分页源重复拉同一页。
-  bool _anySourcePaged() {
-    final sourceRepo = context.read<SourceRepository>();
-    var sources = sourceRepo.byType(widget.sourceType);
-    if (_scope == _SearchScope.single && _selectedSourceId != null) {
-      sources = sources.where((s) => s.id == _selectedSourceId).toList();
-    }
-    for (final s in sources) {
-      for (final r in s.routes.entries) {
-        if (r.key.toLowerCase().contains('search') &&
-            r.value.url.contains('{page}')) {
-          return true;
+  /// 单个源的一次检索（第 [page] 页）：完成后立即把结果并入列表并刷新，
+  /// 实现多源结果「逐源同步展示」而非全部搜完才显示。返回本次新增条数。
+  ///
+  /// 过期搜索（代际不符）的结果直接丢弃，不污染当前列表。
+  Future<int> _runSourceSearch(
+    PluginConfig source,
+    String keyword,
+    int gen, {
+    required int page,
+    bool cnFallback = false,
+  }) async {
+    try {
+      List<MediaItem> items = await _fetchSourcePage(source, keyword, page);
+      // 简繁兜底：单源首搜为空时，用简↔繁互转关键词再试一次；命中则后续
+      // 翻页沿用转换后关键词（_networkKeyword），避免翻页与首搜错位。
+      if (cnFallback && page == 1 && items.isEmpty) {
+        final alt = _alternativeChineseKeyword(keyword);
+        if (alt != null && alt != keyword) {
+          final retried = await _fetchSourcePage(source, alt, page);
+          if (retried.isNotEmpty) {
+            items = retried;
+            if (gen == _searchGen) _networkKeyword = alt;
+          }
         }
       }
+      if (!mounted || gen != _searchGen) return 0;
+      int added = 0;
+      setState(() {
+        if (page == 1) {
+          if (items.isNotEmpty && _sourcePaged(source)) {
+            _sourcesWithMore.add(source.id);
+          }
+        } else if (items.isEmpty) {
+          _sourcesWithMore.remove(source.id);
+        }
+        final fresh =
+            items.where((it) => !_resultIds.contains(it.id)).toList();
+        added = fresh.length;
+        _resultIds.addAll(fresh.map((e) => e.id));
+        _results = <MediaItem>[..._results, ...fresh];
+      });
+      return added;
+    } catch (_) {
+      // 单个源失败不影响其他源。
+      return 0;
     }
-    return false;
   }
 
-  /// 滚动触底追加下一页（仅当源声明了 {page} 且上一页非空）。
+  /// 该源的搜索路由 URL 是否声明了 `{page}` 占位符。
+  /// 只有声明了的源才参与「加载更多」，避免对无分页源重复拉同一页。
+  bool _sourcePaged(PluginConfig source) => source.routes.entries.any(
+        (r) =>
+            r.key.toLowerCase().contains('search') &&
+            r.value.url.contains('{page}'),
+      );
+
+  /// 滚动触底追加下一页：仍可能有下一页的源并发拉取，结果逐源并入。
   Future<void> _loadMore() async {
-    if (_loadingMore || !_hasMore || _loading) return;
-    final trimmed = _controller.text.trim();
-    if (trimmed.isEmpty) return;
+    if (_loadingMore || _loading || _sourcesWithMore.isEmpty) return;
+    final sourceRepo = context.read<SourceRepository>();
+    final targets = sourceRepo
+        .byType(widget.sourceType)
+        .where((s) =>
+            _checkedSourceIds.contains(s.id) &&
+            _sourcesWithMore.contains(s.id))
+        .toList();
+    if (targets.isEmpty) return;
+    // 简繁兜底命中后，后续翻页沿用转换后的关键词（见首搜处的 _networkKeyword 赋值）。
+    final keyword = _networkKeyword ?? _controller.text.trim();
+    if (keyword.isEmpty) return;
     setState(() => _loadingMore = true);
-    try {
-      final next = _page + 1;
-      // 简繁兜底命中后，后续翻页沿用转换后的关键词（见首搜处的 _networkKeyword 赋值）。
-      final keyword = _networkKeyword ?? trimmed;
-      final items = await _fetchPage(keyword, next);
-      if (!mounted) return;
-      setState(() {
-        if (items.isEmpty) {
-          _hasMore = false;
-        } else {
-          // 去重合并：不同页偶有重复条目（站点置顶/推荐位），按 id 去重。
-          final known = _results.map((e) => e.id).toSet();
-          _results = <MediaItem>[
-            ..._results,
-            ...items.where((it) => !known.contains(it.id)),
-          ];
-          _page = next;
-        }
-        _loadingMore = false;
-      });
-    } catch (_) {
-      if (mounted) setState(() => _loadingMore = false);
-    }
+    final int gen = _searchGen;
+    final int next = _page + 1;
+    final counts = await Future.wait(<Future<int>>[
+      for (final source in targets)
+        _runSourceSearch(source, keyword, gen, page: next),
+    ]);
+    if (!mounted || gen != _searchGen) return;
+    setState(() {
+      _loadingMore = false;
+      // 各源第 next 页都为空（无新增）→ 停止翻页；否则记录页码继续。
+      if (counts.fold<int>(0, (a, b) => a + b) > 0) _page = next;
+    });
   }
 
   /// 单源搜索简繁兜底：返回 [kw] 的简↔繁互转变体；若与原文相同（纯 ASCII/
@@ -324,134 +390,121 @@ class _ModuleSourceSearchScreenState extends State<ModuleSourceSearchScreen> {
     return null;
   }
 
-  /// 拉取第 [page] 页搜索结果（跨源循环）。供首搜(page=1)与翻页复用。
-  Future<List<MediaItem>> _fetchPage(String trimmed, int page) async {
-    final sourceRepo = context.read<SourceRepository>();
+  /// 拉取单个源第 [page] 页的搜索结果。
+  ///
+  /// 只负责一个源，由 [_runSourceSearch] 并发调度并逐源展示。字段路由、
+  /// 直达地址、验证重试等口径与原跨源循环实现一致；直达地址与验证抽取
+  /// 到的真实地址只在该源内部流转，不外溢到其他源。
+  Future<List<MediaItem>> _fetchSourcePage(
+    PluginConfig source,
+    String keyword,
+    int page,
+  ) async {
+    // 翻页请求：未声明 {page} 的源第 2 页起跳过（重复拉第 1 页毫无意义）。
+    if (page > 1 && !_sourcePaged(source)) return const <MediaItem>[];
     final mediaService = context.read<MediaApiService>();
-    var sources = sourceRepo.byType(widget.sourceType);
-    if (_scope == _SearchScope.single && _selectedSourceId != null) {
-      sources = sources.where((s) => s.id == _selectedSourceId).toList();
+    String? extractedUrl = widget.extractedUrl;
+    String? renderedHtml;
+    // 字段路由选择：选了字段时，按候选路由名依次探测该源声明了哪个源端字段
+    // 路由（同时兼容两套命名：searchByAuthor / authorSearch 等，方便社区源自由
+    // 命名而无需改应用）。命中则走源端字段检索（服务端已按字段过滤，直接采用）；
+    // 都未命中则回退通用 search，并在下方做客户端按字段收窄。
+    final String? searchField = _searchField;
+    final List<String> routeCandidates = searchField == null
+        ? const <String>['search']
+        : _routeKeysForField(searchField);
+    String routeKey = 'search';
+    bool usedFieldRoute = false;
+    if (searchField != null) {
+      for (final cand in routeCandidates) {
+        if (source.routes.containsKey(cand)) {
+          routeKey = cand;
+          usedFieldRoute = cand != 'search';
+          break;
+        }
+      }
+    }
+    // 直达模式：调用方已给真实页面地址，强制走该源的字段路由（如
+    // authorSearch / tagSearch），并信任其返回结果、跳过客户端收窄。
+    if (extractedUrl != null && extractedUrl.isNotEmpty) {
+      final fieldRouteCandidates = searchField != null
+          ? _routeKeysForField(searchField)
+          : const <String>['search'];
+      for (final cand in fieldRouteCandidates) {
+        if (source.routes.containsKey(cand)) {
+          routeKey = cand;
+          break;
+        }
+      }
+      usedFieldRoute = true;
+    }
+    List<MediaItem> narrow(List<MediaItem> items) {
+      // 走了源端字段路由（如 authorSearch / tagSearch）时，服务端已按字段
+      // 检索，直接采用返回结果；仅当回退到通用 search 时才在客户端按字段收窄，
+      // 且收窄为空则回退原关键词结果（非破坏性），避免"检索无结果"的错觉。
+      if (searchField != null && !usedFieldRoute) {
+        final filtered = items
+            .where((it) => it.matchesQuery(keyword, field: searchField))
+            .toList();
+        return filtered.isEmpty ? items : filtered;
+      }
+      return items;
     }
 
-    final allResults = <MediaItem>[];
-    {
-        for (final source in sources) {
-          // 翻页请求：未声明 {page} 的源第 2 页起跳过（重复拉第 1 页毫无意义）。
-          if (page > 1) {
-            final paged = source.routes.entries.any((r) =>
-                r.key.toLowerCase().contains('search') &&
-                r.value.url.contains('{page}'));
-            if (!paged) continue;
-          }
-          // 仅在调用方未提供直达地址时重置；否则保留 widget.extractedUrl 贯穿整个循环。
-          if (widget.extractedUrl == null) _extractedUrl = null;
-          String? renderedHtml;
-          // 字段路由选择：选了字段时，按候选路由名依次探测该源声明了哪个源端字段
-          // 路由（同时兼容两套命名：searchByAuthor / authorSearch 等，方便社区源自由
-          // 命名而无需改应用）。命中则走源端字段检索（服务端已按字段过滤，直接采用）；
-          // 都未命中则回退通用 search，并在下方做客户端按字段收窄。
-          final searchField = _searchField;
-          final List<String> routeCandidates = searchField == null
-              ? const <String>['search']
-              : _routeKeysForField(searchField);
-          String routeKey = 'search';
-          bool usedFieldRoute = false;
-          if (searchField != null) {
-            for (final cand in routeCandidates) {
-              if (source.routes.containsKey(cand)) {
-                routeKey = cand;
-                usedFieldRoute = cand != 'search';
-                break;
-              }
-            }
-          }
-          // 直达模式：调用方已给真实页面地址，强制走该源的字段路由（如
-          // authorSearch / tagSearch），并信任其返回结果、跳过客户端收窄。
-          if (_extractedUrl != null && _extractedUrl!.isNotEmpty) {
-            final fieldRouteCandidates = searchField != null
-                ? _routeKeysForField(searchField)
-                : const <String>['search'];
-            for (final cand in fieldRouteCandidates) {
-              if (source.routes.containsKey(cand)) {
-                routeKey = cand;
-                break;
-              }
-            }
-            usedFieldRoute = true;
-          }
-          try {
-            final items = await mediaService.fetchApiResults(
+    try {
+      final items = await mediaService.fetchApiResults(
+        source,
+        routeKey,
+        extractedUrl: extractedUrl,
+        renderedHtml: renderedHtml,
+        vars: <String, String>{
+          'keyword': keyword,
+          'page': '$page',
+        },
+      );
+      return narrow(items);
+    } catch (e) {
+      if (!VerificationNavigator.isVerificationError(e)) {
+        // 单个源失败不影响其他源。
+        return const <MediaItem>[];
+      }
+      if (!mounted) return const <MediaItem>[];
+      // 验证异常：跳验证后重试该源（验证弹窗经串行链排队，避免并发多源
+      // 同时命中验证时弹窗叠加）。
+      List<MediaItem> retryItems = const <MediaItem>[];
+      final bool handled = await _serializeVerification<bool>(() {
+        return VerificationNavigator.handleVerificationAndRetry(
+          context,
+          e,
+          () async {
+            final retried = await mediaService.fetchApiResults(
               source,
               routeKey,
-              extractedUrl: _extractedUrl,
+              extractedUrl: extractedUrl,
               renderedHtml: renderedHtml,
               vars: <String, String>{
-                'keyword': trimmed,
+                'keyword': keyword,
                 'page': '$page',
               },
             );
-            // 走了源端字段路由（如 authorSearch / tagSearch）时，服务端已按字段
-            // 检索，直接采用返回结果；仅当回退到通用 search 时才在客户端按字段收窄，
-            // 且收窄为空则回退原关键词结果（非破坏性），避免"检索无结果"的错觉。
-            final List<MediaItem> effective;
-            if (_searchField != null && !usedFieldRoute) {
-              final filtered = items
-                  .where((it) => it.matchesQuery(trimmed, field: _searchField))
-                  .toList();
-              effective = filtered.isEmpty ? items : filtered;
-            } else {
-              effective = items;
-            }
-            allResults.addAll(effective);
-          } catch (e) {
-            // 验证异常：跳验证后重试该源
-            if (VerificationNavigator.isVerificationError(e)) {
-              if (!mounted) return allResults;
-              final handled =
-                  await VerificationNavigator.handleVerificationAndRetry(
-                context,
-                e,
-                () async {
-                  final retryItems = await mediaService.fetchApiResults(
-                    source,
-                    routeKey,
-                    extractedUrl: _extractedUrl,
-                    renderedHtml: renderedHtml,
-                    vars: <String, String>{
-                      'keyword': trimmed,
-                      'page': '$page',
-                    },
-                  );
-                  final List<MediaItem> retryEffective;
-                  if (_searchField != null && !usedFieldRoute) {
-                    final retryFiltered = retryItems
-                        .where((it) =>
-                            it.matchesQuery(trimmed, field: _searchField))
-                        .toList();
-                    retryEffective =
-                        retryFiltered.isEmpty ? retryItems : retryFiltered;
-                  } else {
-                    retryEffective = retryItems;
-                  }
-                  allResults.addAll(retryEffective);
-                },
-                verifyHandler: handleVerificationRequest,
-                onExtracted: (url) => _extractedUrl = url,
-                onRenderedHtml: (html) => renderedHtml = html,
-              );
-              if (!handled) {
-                // 验证未通过：跳过该源，不影响其他源。
-                continue;
-              }
-            }
-            // 单个源失败不影响其他源
-          }
-        }
+            retryItems = narrow(retried);
+          },
+          verifyHandler: handleVerificationRequest,
+          onExtracted: (url) => extractedUrl = url,
+          onRenderedHtml: (html) => renderedHtml = html,
+        );
+      });
+      // 验证未通过：该源无结果，不影响其他源。
+      return handled ? retryItems : const <MediaItem>[];
     }
+  }
 
-    // 字段路由由源端完成匹配；回退 search 的源已在循环内做客户端字段收窄，
-    // 此处不再二次过滤，避免把"源端已正确匹配"的结果误清空。
-    return allResults;
+  /// 验证弹窗串行链：同一时刻只处理一个验证弹窗，处理完再放行下一个。
+  Future<T> _serializeVerification<T>(Future<T> Function() action) {
+    final Future<void> prev = _verificationChain;
+    final Completer<void> gate = Completer<void>();
+    _verificationChain = gate.future;
+    return prev.then((_) => action()).whenComplete(() => gate.complete());
   }
 
   /// 搜索字段 → 源端路由键映射。
@@ -598,30 +651,34 @@ class _ModuleSourceSearchScreenState extends State<ModuleSourceSearchScreen> {
       results: _buildResults(context, l10n),
       sourceType: widget.sourceType,
       header: _buildHeader(context, l10n),
-      // 无痕模式：单源搜索且该源已开启无痕时跳过搜索历史记录；
-      // 聚合（全部源）搜索恒记录。
+      // 无痕模式：仅勾选单个源且该源已开启无痕时跳过搜索历史记录；
+      // 多源/媒体服务器搜索恒记录。
       shouldRecordSearch: () {
-        if (_scope == _SearchScope.single && _selectedSourceId != null) {
-          final src =
-              context.read<SourceRepository>().getById(_selectedSourceId!);
-          if (src != null && ConfigLoader.instance.isIncognito(src)) {
-            return false;
-          }
+        final checked = context
+            .read<SourceRepository>()
+            .byType(widget.sourceType)
+            .where((s) => _checkedSourceIds.contains(s.id))
+            .toList();
+        if (checked.length == 1 &&
+            ConfigLoader.instance.isIncognito(checked.first)) {
+          return false;
         }
         return true;
       },
     );
   }
 
-  /// 搜索页头部：四行左对齐控件（与搜索框 padding 一致）。
+  /// 搜索页头部控件（与搜索框 padding 一致）。
   ///
-  /// 行1：[ 网格 | 列表 ] 布局切换（替代原 AppBar 小图标，更显眼完整）
-  /// 行2：[ 聚合全部源 | 单源 ] 搜索范围
-  /// 行3：（仅单源）源选择条
-  /// 行4：字段筛选胶囊(全部/标签/作者/导演/主演/作品)
+  /// 行1：源勾选条 [ 全选/全不选 | 各源勾选 chip | 媒体服务器（仅影视） ]
+  ///      —— 不再区分聚合/单源，勾选了哪些源就搜哪些源；
+  /// 行2：字段筛选胶囊(全部/标签/作者/导演/主演/作品)。
   Widget _buildHeader(BuildContext context, AppLocalizations l10n) {
     final sourceRepo = context.read<SourceRepository>();
     final sources = sourceRepo.byType(widget.sourceType);
+    _ensureSelectionInit(sources);
+    final bool hasMediaServer = widget.sourceType == SourceType.animeSource;
+    final int itemCount = sources.length + 1 + (hasMediaServer ? 1 : 0);
 
     return Padding(
       // 与搜索框的 EdgeInsets.symmetric(horizontal: spaceLg) 完全对齐
@@ -629,34 +686,10 @@ class _ModuleSourceSearchScreenState extends State<ModuleSourceSearchScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: <Widget>[
-          // ── 第1行：聚合 / 单源（布局切换已移至 AppBar，与书架一致）──
+          // ── 行1：源勾选条（桌面端滚轮/拖动可横滚）──
           SizedBox(
-            width: double.infinity,
-            child: SegmentedButton<_SearchScope>(
-              segments: <ButtonSegment<_SearchScope>>[
-                ButtonSegment<_SearchScope>(
-                  value: _SearchScope.aggregate,
-                  label: Text(l10n.searchAggregate),
-                ),
-                ButtonSegment<_SearchScope>(
-                  value: _SearchScope.single,
-                  label: Text(l10n.searchSingle),
-                ),
-              ],
-              selected: <_SearchScope>{_scope},
-              onSelectionChanged: (Set<_SearchScope> sel) {
-                setState(() => _scope = sel.first);
-                _doSearch(_controller.text);
-              },
-              showSelectedIcon: false,
-            ),
-          ),
-
-          // ── 第3行：（仅单源时）源选择条 ──
-          if (_scope == _SearchScope.single) ...<Widget>[
-            const SizedBox(height: AppTokens.spaceSm),
-            // 桌面端鼠标滚轮可左右滚动（项 2）
-            Listener(
+            height: 40,
+            child: Listener(
               onPointerSignal: (signal) {
                 if (signal is PointerScrollEvent &&
                     _sourceScrollController.hasClients) {
@@ -671,47 +704,54 @@ class _ModuleSourceSearchScreenState extends State<ModuleSourceSearchScreen> {
                   }
                 }
               },
-              child: SizedBox(
-                height: 40,
-                // 桌面端支持鼠标左键拖动横向滚动（项 3）：默认 ScrollBehavior
-                // 不允许鼠标拖动（仅触控），这里显式加入 mouse/trackpad/stylus。
-                child: ScrollConfiguration(
-                  behavior: ScrollConfiguration.of(context).copyWith(
-                    dragDevices: <PointerDeviceKind>{
-                      PointerDeviceKind.touch,
-                      PointerDeviceKind.mouse,
-                      PointerDeviceKind.trackpad,
-                      PointerDeviceKind.stylus,
-                    },
-                  ),
-                  child: ListView.separated(
-                    controller: _sourceScrollController,
-                    scrollDirection: Axis.horizontal,
-                    itemCount: sources.length,
-                    separatorBuilder: (_, __) =>
-                        const SizedBox(width: AppTokens.spaceXs),
-                    itemBuilder: (_, i) {
-                      final s = sources[i];
-                      final selected = _selectedSourceId == s.id;
-                      return ChoiceChip(
-                        key: selected ? _selectedSourceKey : null,
-                        label: Text(s.name),
-                        selected: selected,
-                        onSelected: (_) {
-                          AppHaptics.selectionClick();
-                          setState(() => _selectedSourceId =
-                              selected ? null : s.id);
-                          _doSearch(_controller.text);
-                        },
-                      );
-                    },
-                  ),
+              child: ScrollConfiguration(
+                behavior: ScrollConfiguration.of(context).copyWith(
+                  dragDevices: <PointerDeviceKind>{
+                    PointerDeviceKind.touch,
+                    PointerDeviceKind.mouse,
+                    PointerDeviceKind.trackpad,
+                    PointerDeviceKind.stylus,
+                  },
+                ),
+                child: ListView.separated(
+                  controller: _sourceScrollController,
+                  scrollDirection: Axis.horizontal,
+                  itemCount: itemCount,
+                  separatorBuilder: (_, __) =>
+                      const SizedBox(width: AppTokens.spaceXs),
+                  itemBuilder: (_, i) {
+                    if (i == 0) return _selectAllChip(l10n, sources);
+                    final int idx = i - 1;
+                    if (hasMediaServer && idx == sources.length) {
+                      return _mediaServerChip(l10n);
+                    }
+                    final s = sources[idx];
+                    return FilterChip(
+                      key: (widget.startSingle &&
+                              s.id == widget.initialSourceId)
+                          ? _selectedSourceKey
+                          : null,
+                      label: Text(s.name),
+                      selected: _checkedSourceIds.contains(s.id),
+                      onSelected: (bool value) {
+                        AppHaptics.selectionClick();
+                        setState(() {
+                          if (value) {
+                            _checkedSourceIds.add(s.id);
+                          } else {
+                            _checkedSourceIds.remove(s.id);
+                          }
+                        });
+                        _doSearch(_controller.text);
+                      },
+                    );
+                  },
                 ),
               ),
-              ),
-          ],
+            ),
+          ),
 
-          // ── 第4行：字段筛选胶囊（按模块类型显示对应字段）──
+          // ── 行2：字段筛选胶囊（按模块类型显示对应字段）──
           // 小说/漫画：标签 + 作者（无导演/主演概念）
           // 媒体（影视）：标签 + 导演 + 主演（无"作者"概念）
           const SizedBox(height: AppTokens.spaceSm),
@@ -731,6 +771,49 @@ class _ModuleSourceSearchScreenState extends State<ModuleSourceSearchScreen> {
           const SizedBox(height: AppTokens.spaceSm),
         ],
       ),
+    );
+  }
+
+  /// 「全选 / 全不选」快捷 chip：一键勾选/清空全部源（含媒体服务器）。
+  Widget _selectAllChip(AppLocalizations l10n, List<PluginConfig> sources) {
+    final bool allChecked =
+        _checkedSourceIds.containsAll(sources.map((s) => s.id)) &&
+            (widget.sourceType != SourceType.animeSource ||
+                _mediaServerChecked);
+    return ActionChip(
+      label: Text(allChecked ? l10n.deselectAll : l10n.selectAll),
+      onPressed: () {
+        AppHaptics.selectionClick();
+        setState(() {
+          if (allChecked) {
+            _checkedSourceIds.clear();
+            _mediaServerChecked = false;
+          } else {
+            _checkedSourceIds
+              ..clear()
+              ..addAll(sources.map((s) => s.id));
+            if (widget.sourceType == SourceType.animeSource) {
+              _mediaServerChecked = true;
+            }
+          }
+        });
+        _doSearch(_controller.text);
+      },
+    );
+  }
+
+  /// 媒体服务器源 chip（仅影视模块）：作为可选源与普通源并列，勾选才参与
+  /// 搜索，不再无条件插入结果顶部。
+  Widget _mediaServerChip(AppLocalizations l10n) {
+    return FilterChip(
+      avatar: const Icon(Icons.dns_rounded, size: 16),
+      label: Text(l10n.mediaServerSettings),
+      selected: _mediaServerChecked,
+      onSelected: (bool value) {
+        AppHaptics.selectionClick();
+        setState(() => _mediaServerChecked = value);
+        _doSearch(_controller.text);
+      },
     );
   }
 
@@ -776,43 +859,45 @@ class _ModuleSourceSearchScreenState extends State<ModuleSourceSearchScreen> {
   }
 
   Widget _buildResults(BuildContext context, AppLocalizations l10n) {
-    // 影视模块搜索在结果顶部聚合媒体服务器段（查询非空时）。
-    Widget mainBody;
-    if (_loading) {
-      mainBody = const Center(child: AppLoadingIndicator());
-    }
-
     if (_needSource) {
-      mainBody =
-          AppEmptyState(icon: Icons.source_rounded, message: l10n.searchSelectSource);
+      return AppEmptyState(
+          icon: Icons.source_rounded, message: l10n.searchSelectSource);
     }
 
+    Widget mainBody;
     if (_results.isEmpty) {
-      mainBody = AppEmptyState(icon: Icons.search_rounded, message: l10n.emptySearch);
+      // 搜索中且尚无任何结果 → 全屏加载；全部源落定仍为空 → 空态。
+      mainBody = _loading
+          ? const Center(child: AppLoadingIndicator())
+          : AppEmptyState(
+              icon: Icons.search_rounded, message: l10n.emptySearch);
+    } else {
+      // 结果逐源到达即插入列表；仍有源在搜/翻页追加时底部细进度条提示。
+      mainBody = NotificationListener<ScrollNotification>(
+        onNotification: (n) {
+          if (_sourcesWithMore.isNotEmpty &&
+              !_loading &&
+              !_loadingMore &&
+              n.metrics.extentAfter < 400 &&
+              n.metrics.maxScrollExtent > 0) {
+            _loadMore();
+          }
+          return false;
+        },
+        child: Column(
+          children: <Widget>[
+            Expanded(child: _grid ? _buildGrid(context) : _buildList(context)),
+            if (_loading || _loadingMore)
+              const LinearProgressIndicator(minHeight: 2),
+          ],
+        ),
+      );
     }
 
-    // 滚动触底自动加载下一页（仅当有源声明 {page} 且上一页非空时生效），
-    // 修复「搜索不全（还有下一页）」。底部细进度条提示追加加载中。
-    final body = _grid ? _buildGrid(context) : _buildList(context);
-    mainBody = NotificationListener<ScrollNotification>(
-      onNotification: (n) {
-        if (_hasMore &&
-            !_loadingMore &&
-            n.metrics.extentAfter < 400 &&
-            n.metrics.maxScrollExtent > 0) {
-          _loadMore();
-        }
-        return false;
-      },
-      child: Column(
-        children: <Widget>[
-          Expanded(child: body),
-          if (_loadingMore)
-            const LinearProgressIndicator(minHeight: 2),
-        ],
-      ),
-    );
-    if (widget.sourceType != SourceType.animeSource) return mainBody;
+    // 影视模块：媒体服务器作为可选源参与搜索——勾选才在结果顶部展示该段。
+    if (widget.sourceType != SourceType.animeSource || !_mediaServerChecked) {
+      return mainBody;
+    }
     final query = _convText(_controller.text).trim();
     if (query.isEmpty) return mainBody;
     return Column(
