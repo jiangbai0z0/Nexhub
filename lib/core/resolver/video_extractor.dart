@@ -131,10 +131,12 @@ class VideoExtractor {
     final text = text0.replaceAll('\\/', '/');
 
     // —— 模式1：player_xxx = { ... "url":"..." ... } ——
-    // 用 `\{[^{}]*\}` 而非 `\{.*?\}`：MacCMS player 对象是扁平 JSON（不含嵌套
-    // 花括号），精准截到对象结尾，避免跨语句多捕获。
+    // 允许一层嵌套花括号：MacCMS v10 标准的 player_aaaa 含 `vod_data:{...}`
+    // 子对象（位于 url 字段之前），`\{[^{}]*\}` 在子对象处截断导致整个模式
+    // 失配，只能靠模式2的裸直链兜底；`\{(?:[^{}]|\{[^{}]*\})*\}` 精确覆盖
+    // 扁平与一层嵌套两种形态，两层以上嵌套的播放器对象目前没有已知站点。
     final playerRe = RegExp(
-      r'player_\w+\s*=\s*(\{[^{}]*\})\s*(?:<|;|\n|$)',
+      r'player_\w+\s*=\s*(\{(?:[^{}]|\{[^{}]*\})*\})\s*(?:<|;|\n|$)',
       dotAll: true,
     );
     for (final m in playerRe.allMatches(text)) {
