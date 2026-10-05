@@ -361,5 +361,81 @@ void main() {
       );
       expect((r2 as List)[0].title, '旧版标题');
     });
+
+    // pms_girigirilove 回归：扁平字符串 episodes + 顶层 `list`（JSONPath，
+    // 供 list 类 API 用）共存时，字符串选择器曾被 sel['list'] 劫持成 HTML
+    // 选择器（'$.list' 非法 CSS → 抛 FormatException → 剧集恒空）。
+    test('flat legacy shape wins over top-level `list` string (no hijack)',
+        () async {
+      final source = _source(<String, dynamic>{
+        'list': '\$.list',
+        'episodes': 'div.chapter a',
+      });
+      const html = '''
+<html><body>
+<div class="chapter"><a href="/c1">第1话</a></div>
+<div class="chapter"><a href="/c2">第2话</a></div>
+</body></html>
+''';
+      final r = await const BuiltinResolver().resolveFromHtml(
+        source,
+        'episodes',
+        html,
+      );
+      final eps = r as List;
+      expect(eps.length, 2);
+      expect(eps[0].url, '/c1');
+      expect(eps[1].url, '/c2');
+    });
+
+    // 封面相对路径补全：MacCMS 源 vod_pic 常为 /upload 根相对路径，不补全
+    // 会在 UI 层被当作本地文件路径渲染，封面永远空白。
+    test('list cover: root-relative path is absolutized against baseUrl',
+        () async {
+      final source = _source(<String, dynamic>{
+        'latest': <String, dynamic>{
+          'list': 'div.item',
+          'id': 'a@href',
+          'title': '.t',
+          'cover': 'img@data-src',
+        },
+      });
+      const html = '''
+<html><body>
+<div class="item">
+  <a href="/v/1"><span class="t">某番剧</span><img data-src="/upload/vod/a.webp"/></a>
+</div>
+</body></html>
+''';
+      final r = await const BuiltinResolver().resolveFromHtml(
+        source,
+        'latest',
+        html,
+      );
+      final items = r as List;
+      expect(items[0].coverUrl, 'https://www.example.com/upload/vod/a.webp');
+    });
+
+    test('detail cover: protocol-relative path keeps https scheme', () async {
+      final source = _source(<String, dynamic>{
+        'detail': <String, dynamic>{
+          'title': '//h1/text()',
+          'cover': 'img@data-src',
+        },
+      });
+      const html = '''
+<html><body>
+<h1>协议相对封面</h1>
+<img data-src="//cdn.example.com/pic/b.webp"/>
+</body></html>
+''';
+      final r = await const BuiltinResolver().resolveFromHtml(
+        source,
+        'detail',
+        html,
+      );
+      final item = r as MediaItem;
+      expect(item.coverUrl, 'https://cdn.example.com/pic/b.webp');
+    });
   });
 }

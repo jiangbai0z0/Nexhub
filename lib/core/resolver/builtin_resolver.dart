@@ -515,7 +515,8 @@ class BuiltinResolver implements SourceResolver {
     switch (apiName) {
       case 'detail':
         return _itemFromJsonSelector(
-            json, _subSel(sel, 'detail', sel), source);
+            json, _subSel(sel, 'detail', sel), source,
+            baseUrl: baseUrl);
       case 'episodes':
       case 'chapters':
         return _episodesFromJsonSelector(json, sel, source);
@@ -527,7 +528,8 @@ class BuiltinResolver implements SourceResolver {
         // 周期表专用：列表项按真实开播星期（藏在 status 如 "45|周日" 中）注入
         // updatedAt，使 OnlineScheduleSection 按开播日而非最后更新时间分组。
         final items = _itemsFromJsonSelector(
-            json, _subSel(sel, 'week', sel), source);
+            json, _subSel(sel, 'week', sel), source,
+            baseUrl: baseUrl);
         return [
           for (final it in items) it.copyWith(updatedAt: _airingDateFor(it)),
         ];
@@ -537,7 +539,10 @@ class BuiltinResolver implements SourceResolver {
         // 否则 grouped JSON 源会因为 sel['list'] 为 null 而回退到默认 `$.list`，
         // 解析为空列表。无该子键时 _subSel 回退到 sel 本身，向后兼容扁平写法。
         return _itemsFromJsonSelector(
-            json, _subSel(sel, apiName, _searchSelFallback(sel, apiName)), source);
+            json,
+            _subSel(sel, apiName, _searchSelFallback(sel, apiName)),
+            source,
+            baseUrl: baseUrl);
     }
   }
 
@@ -586,22 +591,24 @@ class BuiltinResolver implements SourceResolver {
   List<MediaItem> _itemsFromJsonSelector(
     dynamic json,
     Map<String, dynamic> sel,
-    PluginConfig source,
-  ) {
+    PluginConfig source, {
+    required String baseUrl,
+  }) {
     final listPath = sel['list'] as String? ?? '\$.list';
     final items = JsonPath.eval(listPath, json);
     if (items is! List) return const [];
     return [
       for (final it in items)
-        if (it is Map) _itemFromJsonSelector(it, sel, source),
+        if (it is Map) _itemFromJsonSelector(it, sel, source, baseUrl: baseUrl),
     ];
   }
 
   MediaItem _itemFromJsonSelector(
     dynamic item,
     Map<String, dynamic> sel,
-    PluginConfig source,
-  ) {
+    PluginConfig source, {
+    required String baseUrl,
+  }) {
     String pick(String key) {
       final p = sel[key];
       if (p == null) return '';
@@ -613,7 +620,7 @@ class BuiltinResolver implements SourceResolver {
     final base = MediaItem(
       id: pick('id'),
       title: pick('title'),
-      coverUrl: pick('cover'),
+      coverUrl: _absoluteCoverUrl(pick('cover'), baseUrl),
       detailUrl: pick('detailUrl').isNotEmpty ? pick('detailUrl') : pick('detail'),
       sourceId: source.id,
       sourceType: source.type,
@@ -639,7 +646,8 @@ class BuiltinResolver implements SourceResolver {
       if (items is List) {
         final seasons = <MediaItem>[
           for (final s in items)
-            if (s is Map) _itemFromJsonSelector(s, sub, source),
+            if (s is Map)
+              _itemFromJsonSelector(s, sub, source, baseUrl: baseUrl),
         ];
         if (seasons.isNotEmpty) return base.copyWith(seasons: seasons);
       }
@@ -728,7 +736,7 @@ class BuiltinResolver implements SourceResolver {
     final sub = _subSel(sel, apiName, _searchSelFallback(sel, apiName));
     switch (apiName) {
       case 'detail':
-        return _itemFromHtmlSelector(html, sub, source);
+        return _itemFromHtmlSelector(html, sub, source, baseUrl);
       case 'episodes':
       case 'chapters':
         // episodes/chapters share selectors: prefer the sub-map keyed by the
@@ -743,17 +751,18 @@ class BuiltinResolver implements SourceResolver {
       case 'video':
         return _videoFromHtmlSelector(html, sub, baseUrl: baseUrl);
       case 'week':
-        return _weekFromHtmlSelector(html, sub, source);
+        return _weekFromHtmlSelector(html, sub, source, baseUrl);
       default:
-        return _itemsFromHtmlSelector(html, sub, source);
+        return _itemsFromHtmlSelector(html, sub, source, baseUrl);
     }
   }
 
   List<MediaItem> _itemsFromHtmlSelector(
     String html,
     Map<String, dynamic> sel,
-    PluginConfig source,
-  ) {
+    PluginConfig source, [
+    String? baseUrl,
+  ]) {
     final listSel = sel['list'] as String? ?? 'div.item';
     final elements = HtmlUtils.elements(html, listSel);
     debugPrint('[BuiltinResolver] listSel=$listSel elements=${elements.length}');
@@ -761,7 +770,7 @@ class BuiltinResolver implements SourceResolver {
     // 无法取到关键信息的卡片等）。对齐参考库解析器「字段取不到即跳过」
     // 的语义（如 `?.let(::add)`），不针对任何特定站点/广告域名特判。
     final items = <MediaItem>[
-      for (final el in elements) _itemFromElement(el, sel, source),
+      for (final el in elements) _itemFromElement(el, sel, source, baseUrl),
     ];
     final filtered =
         items.where((it) => it.id.isNotEmpty || it.title.isNotEmpty).toList();
@@ -782,8 +791,9 @@ class BuiltinResolver implements SourceResolver {
   List<MediaItem> _weekFromHtmlSelector(
     String html,
     Map<String, dynamic> sel,
-    PluginConfig source,
-  ) {
+    PluginConfig source, [
+    String? baseUrl,
+  ]) {
     final blocksSel = sel['dayBlocks'] as String? ?? 'ul.week-content';
     final dayAttr = sel['dayIndexAttr'] as String? ?? 'data-key';
     final itemSel = sel['item'] as String? ?? 'li';
@@ -794,7 +804,7 @@ class BuiltinResolver implements SourceResolver {
       if (dayIdx == null || dayIdx < 0 || dayIdx > 6) continue;
       final date = _dateForWeekday(dayIdx);
       for (final el in block.querySelectorAll(itemSel)) {
-        final it = _itemFromElement(el, sel, source);
+        final it = _itemFromElement(el, sel, source, baseUrl);
         // updatedAt 由天块星期几注入（selectors.week 不声明 updatedAt）。
         items.add(it.updatedAt == null ? it.copyWith(updatedAt: date) : it);
       }
@@ -844,10 +854,11 @@ class BuiltinResolver implements SourceResolver {
   MediaItem _itemFromHtmlSelector(
     String html,
     Map<String, dynamic> sel,
-    PluginConfig source,
-  ) {
+    PluginConfig source, [
+    String? baseUrl,
+  ]) {
     final root = HtmlUtils.parse(html);
-    return _itemFromElement(root.documentElement!, sel, source);
+    return _itemFromElement(root.documentElement!, sel, source, baseUrl);
   }
 
   /// 按顶层逗号拆分复合选择器（保护引号、括号与方括号内的逗号，
@@ -917,7 +928,12 @@ class BuiltinResolver implements SourceResolver {
     return el.querySelector(branch)?.text.trim() ?? '';
   }
 
-  MediaItem _itemFromElement(Element el, Map<String, dynamic> sel, PluginConfig source) {
+  MediaItem _itemFromElement(
+    Element el,
+    Map<String, dynamic> sel,
+    PluginConfig source, [
+    String? baseUrl,
+  ]) {
     // Lazily serialised only when an XPath field selector is encountered
     // (some sources use relative XPath like `./a/@title` which cannot be
     // evaluated via querySelector). Cached to avoid re-serialising per field.
@@ -995,7 +1011,7 @@ class BuiltinResolver implements SourceResolver {
     final base = MediaItem(
       id: id,
       title: pick('title'),
-      coverUrl: pick('cover', attr: true),
+      coverUrl: _absoluteCoverUrl(pick('cover', attr: true), baseUrl),
       detailUrl: detailUrl.isNotEmpty ? detailUrl : null,
       sourceId: source.id,
       sourceType: source.type,
@@ -1022,7 +1038,7 @@ class BuiltinResolver implements SourceResolver {
       final elements = el.querySelectorAll(listSel);
       if (elements.isNotEmpty) {
         final seasons = <MediaItem>[
-          for (final s in elements) _itemFromElement(s, sub, source),
+          for (final s in elements) _itemFromElement(s, sub, source, baseUrl),
         ];
         if (seasons.isNotEmpty) return base.copyWith(seasons: seasons);
       }
@@ -1035,13 +1051,13 @@ class BuiltinResolver implements SourceResolver {
     Map<String, dynamic> sel,
     PluginConfig source,
   ) {
-    // Three selector shapes are supported:
-    // 1. Sub-map already extracted by _parseHtml (top-level extraction):
-    // sel = {list, title, id, url}
-    // 2. Nested but not extracted: sel = {episodes: {list, title, id}} or
-    // {chapters: {...}} (nested-shape style when _parseHtml is bypassed).
-    // 3. Flat legacy shape: sel = {episodes: "div.chapter a"} or
-    // {chapters: "..."} (string selector only).
+    // Selector shapes (priority high→low):
+    // 1. Nested map: sel = {episodes: {list, title, id, url}} or {chapters:...}
+    //    (either as the extracted sub-map from _parseHtml, or nested in place).
+    // 2. Flat legacy string: sel = {episodes: "div.chapter a"} — wins over
+    //    shape 3 even when a top-level `list` string exists (that string
+    //    belongs to the JSON list APIs, not the HTML episode selector).
+    // 3. Extracted sub-map only: sel = {list, title, url} (no episodes key).
     final epSelRaw = sel['episodes'] ?? sel['chapters'];
     String listSel;
     Map<String, dynamic> fieldSel;
@@ -1049,6 +1065,14 @@ class BuiltinResolver implements SourceResolver {
       final m = Map<String, dynamic>.from(epSelRaw);
       listSel = m['list'] as String? ?? 'div.chapter a';
       fieldSel = m;
+    } else if (epSelRaw is String && epSelRaw.isNotEmpty) {
+      // 扁平旧形态（字符串选择器）必须优先于下方「已提取子表」分支：
+      // 声明了顶层 `list`（JSONPath 列表源的 `$.list`）的源，其字符串形态
+      // 的 episodes 选择器此前会被 sel['list'] 劫持成 HTML 列表选择器
+      // （`$.list` 不是合法 CSS → querySelectorAll 抛 FormatException →
+      // 详情页剧集解析直接失败）。
+      listSel = epSelRaw;
+      fieldSel = const <String, dynamic>{};
     } else if (sel['list'] is String || sel['lineList'] is String) {
       // Sub-map already extracted by _parseHtml.
       listSel = sel['list'] as String? ?? 'div.chapter a';
@@ -1233,6 +1257,26 @@ class BuiltinResolver implements SourceResolver {
       return VideoResult(url: first.url, type: _guessType(first.url));
     }
     return _videoResult('');
+  }
+
+  /// 封面相对路径补全为绝对 URL。
+  ///
+  /// MacCMS 等源的 `vod_pic` 常返回根相对路径（`/upload/vod/x.webp`）；
+  /// 不补全会流入 UI 层（AppCoverImage/SourceImage 以 `http` 前缀区分
+  /// 网络图与本地文件图），相对路径被当作本地文件渲染，封面永远空白。
+  /// 以本次请求实际使用的 baseUrl（活动镜像）为基准补全；已是绝对地址、
+  /// 非 http(s) 特殊 scheme（data: 等）或取不到基准时原样返回。
+  String? _absoluteCoverUrl(String? raw, String? baseUrl) {
+    final s = raw?.trim() ?? '';
+    if (s.isEmpty) return null;
+    if (s.startsWith('http://') || s.startsWith('https://')) return s;
+    if (!s.startsWith('/') && !s.startsWith('//')) return s;
+    if (baseUrl == null || baseUrl.isEmpty) return s;
+    try {
+      return _toAbsolute(s, baseUrl);
+    } on Object {
+      return s;
+    }
   }
 
   /// 将相对 URL 基于 baseUrl 解析为绝对 URL。
