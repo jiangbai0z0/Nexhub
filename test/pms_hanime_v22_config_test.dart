@@ -126,7 +126,7 @@ void main() {
     test('v29 筛选对齐站点表单：genre 10 值含新番預告，search 路由带数组占位', () {
       final raw = File('plugins/builtin/pms_hanime.json').readAsStringSync();
       // 站点搜索表单 genre-option 实测 11 项（全部 + 10 真值），新番預告在列。
-      // v24 曾依参考库 genre.json 判断其不存在而剔除，v29 以站点一手取证反转。
+      // v24 曾依参考对照数据 genre.json 判断其不存在而剔除，v29 以站点一手取证反转。
       expect(raw.contains('新番預告'), isTrue,
           reason: '站点 genre-option data-value 含「新番預告」（实测 19 卡）');
       expect(source.routes['search']!.url, contains('tags[]={tags}'),
@@ -215,7 +215,7 @@ void main() {
         expect(g.options.length, count, reason: '$id 选项数对齐站点 240 checkbox');
         expect(g.multiSelect, isTrue, reason: '$id 需多选');
         expect(g.param, 'tags', reason: '$id 共用 tags 占位符');
-        expect(g.title, titles[id], reason: '$id 标题对齐参考库 zh-rCN strings');
+        expect(g.title, titles[id], reason: '$id 标题对齐参考对照数据 zh-rCN strings');
         for (final o in g.options) {
           expect(o.value, isNotEmpty);
           expect(o.label, isNotEmpty);
@@ -238,9 +238,9 @@ void main() {
       ]), isTrue, reason: 'v29 逐组差集补齐的 5 个缺失 tag');
     });
 
-    test('v24 homeSections：参考库 12 版块参数映射逐一落地', () {
+    test('v24 homeSections：参考对照数据 12 版块参数映射逐一落地', () {
       final sections = source.homeSections;
-      expect(sections.length, 12, reason: '参考库 buildCategoryList 12 版块');
+      expect(sections.length, 12, reason: '参考对照数据 buildCategoryList 12 版块');
       Map<String, Object> paramsOf(String id) {
         final s = sections.firstWhere((x) => x.id == id);
         return s.params;
@@ -326,7 +326,7 @@ void main() {
 
     test('v28 hosts 换权威实测 IP：剔快照/死域，与 DNS 实解一致', () {
       final hosts = source.network?.hosts ?? const <dynamic>[];
-      // 曾经照抄参考库 HDns.kt 的 CF 快照 IP，其中 3/5 返回 CF error 1034
+      // 曾经参考对照数据 HDns.kt 的 CF 快照 IP，其中 3/5 返回 CF error 1034
       // （Edge IP Restricted，该边缘 IP 未获本站授权），TCP 却通、连接层判定
       // 成功 → 应用层 403 弹验证。全部换成 doh.pub 权威 A 记录实测可用的 IP。
       final ips = hosts.map((h) => '${h.ip}').toSet();

@@ -97,7 +97,7 @@ void main() {
     test('评论/收藏链路同构落地', () {
       final comments = source.comments;
       expect(comments!.login!.url, 'https://hanime1.me/login');
-      // Laravel 会话键名同构（参考库四站共用同一 cookie jar 语义）。
+      // Laravel 会话键名同构（参考对照数据四站共用同一 cookie jar 语义）。
       expect(comments.login!.checkCookie, 'hanime1_session');
       expect(comments.routes.containsKey('list'), isTrue);
       expect(comments.routes.containsKey('replies'), isTrue);

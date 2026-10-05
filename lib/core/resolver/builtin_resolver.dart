@@ -810,7 +810,7 @@ class BuiltinResolver implements SourceResolver {
     final elements = HtmlUtils.elements(html, listSel);
     debugPrint('[BuiltinResolver] listSel=$listSel elements=${elements.length}');
     // 通用垃圾卡过滤：id 与 title 同时为空的条目不进列表（广告占位卡、
-    // 无法取到关键信息的卡片等）。对齐参考库解析器「字段取不到即跳过」
+    // 无法取到关键信息的卡片等）。对齐既有解析器「字段取不到即跳过」
     // 的语义（如 `?.let(::add)`），不针对任何特定站点/广告域名特判。
     final items = <MediaItem>[
       for (final el in elements) _itemFromElement(el, sel, source, baseUrl),
